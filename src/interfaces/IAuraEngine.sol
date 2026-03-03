@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 /**
  * @title IAuraEngine
- * @author Aura Protocol
+ * @author Sanzhik(traffer7612)
  * @notice Main entrypoint for the Autonomous Yield-Backed Credit Engine
  */
 interface IAuraEngine {

@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 /**
  * @title AuraProxy
- * @author Aura Protocol
+ * @author Sanzhik(traffer7612)
  * @notice UUPS (EIP-1822) upgradeable proxy. Delegates all calls to the implementation;
  *         implementation slot follows EIP-1967 for tooling compatibility.
  */

@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 /**
  * @title AuraStorage
- * @author Aura Protocol
+ * @author Sanzhik(traffer7612)
  * @notice EIP-7201 namespaced storage layout for the Aura Engine. Ensures zero collision risk
  *         with implementation contract storage and other namespaces across upgrades.
  * @dev Storage location: erc7201("com.aura.engine.v1")

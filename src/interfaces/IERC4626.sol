@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 /**
  * @title IERC4626
- * @author Aura Protocol
+ * @author Sanzhik(traffer7612)
  * @notice Minimal ERC-4626 view interface for yield-bearing vault collateral
  */
 interface IERC4626 {

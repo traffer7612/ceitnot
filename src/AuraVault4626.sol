@@ -5,7 +5,7 @@ import { IAuraEngine } from "./interfaces/IAuraEngine.sol";
 
 /**
  * @title AuraVault4626
- * @author Aura Protocol
+ * @author Sanzhik(traffer7612)
  * @notice ERC-4626 view adapter for Aura Engine: exposes totalAssets / convertTo* using
  *         engine's total collateral (in underlying). Enables 4626-compatible integrators
  *         to read engine state without holding a position.

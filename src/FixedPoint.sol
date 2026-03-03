@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 /**
  * @title FixedPoint
- * @author Aura Protocol
+ * @author Sanzhik(traffer7612)
  * @notice High-precision fixed-point math (WAD 1e18, RAY 1e27) for debt and yield accounting.
  * @dev All rounding follows protocol-favorable direction: debt rounded up, collateral/value down.
  */

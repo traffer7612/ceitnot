@@ -17,7 +17,7 @@ interface IFallbackFeed {
 
 /**
  * @title OracleRelay
- * @author Aura Protocol
+ * @author Sanzhik(traffer7612)
  * @notice Multi-oracle price discovery: Chainlink primary with optional fallback (e.g. RedStone).
  *         Prevents liquidations driven by a single faulty feed. Uses heartbeat and validity checks.
  */

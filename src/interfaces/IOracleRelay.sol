@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 /**
  * @title IOracleRelay
- * @author Aura Protocol
+ * @author Sanzhik(traffer7612)
  * @notice Multi-oracle price feed with Chainlink primary and RedStone (or other) fallback.
  *         Prices returned in 1e8 (USD decimals) or configurable.
  */

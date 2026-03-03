@@ -8,7 +8,7 @@ import { IOracleRelay } from "./interfaces/IOracleRelay.sol";
 
 /**
  * @title AuraEngine
- * @author Aura Protocol
+ * @author Sanzhik(traffer7612)
  * @notice Autonomous Yield-Backed Credit Engine: deposit ERC-4626 yield-bearing collateral,
  *         borrow stablecoin; yield is programmatically applied to principal (Yield Siphon).
  * @dev Uses EIP-7201 namespaced storage; UUPS upgradeable; stream-settlement via globalDebtScale.
