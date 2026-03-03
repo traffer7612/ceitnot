@@ -428,7 +428,7 @@ contract SecurityTest is Test {
     function test_SEC_access_nonAdminCannotTransferAdmin() public {
         vm.prank(eve);
         vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
-        engine.setAdmin(eve);
+        engine.proposeAdmin(eve);
     }
 
     /// @notice Non-admin cannot propose params
@@ -498,26 +498,18 @@ contract SecurityTest is Test {
 
     /// @notice Cannot re-initialize the proxy (already initialized)
     function test_SEC_proxy_reinitializeReverts() public {
-        vm.expectRevert(AuraEngine.Aura__InvalidParams.selector);
+        vm.expectRevert(AuraEngine.Aura__AlreadyInitialized.selector);
         engine.initialize(
             address(vault), address(debtToken), address(oracle),
             8000, 8500, 500, 1 days, 2 days
         );
     }
 
-    /// @notice Implementation contract directly should also block re-init (after proxy init)
-    function test_SEC_proxy_implementationCanBeInitializedDirectly() public {
-        // NOTE: The raw implementation has no collateralVault set, so it CAN be initialized.
-        // This is a known pattern in UUPS — the implementation itself is typically not initialized.
-        // However, it doesn't affect security because the proxy delegates to its own storage.
+    /// @notice Implementation contract is locked from direct initialization (_disableInitializers)
+    function test_SEC_proxy_implementationLockedFromInit() public {
         AuraEngine rawImpl = new AuraEngine();
-        // Can initialize raw impl (not a vulnerability — storage is separate from proxy)
-        rawImpl.initialize(
-            address(vault), address(debtToken), address(oracle),
-            8000, 8500, 500, 1 days, 2 days
-        );
-        // But re-init reverts
-        vm.expectRevert(AuraEngine.Aura__InvalidParams.selector);
+        // Constructor calls _disableInitializers — init should revert
+        vm.expectRevert(AuraEngine.Aura__AlreadyInitialized.selector);
         rawImpl.initialize(
             address(vault), address(debtToken), address(oracle),
             8000, 8500, 500, 1 days, 2 days
@@ -991,17 +983,21 @@ contract SecurityTest is Test {
     //  16. ADMIN TRANSFER CHAIN
     // =====================================================================
 
-    /// @notice Admin transfer chain: A → B → C, old admins locked out
+    /// @notice Admin transfer chain: A → B → C (two-step), old admins locked out
     function test_SEC_admin_transferChain() public {
-        // admin (this) → alice
-        engine.setAdmin(alice);
+        // admin (this) → alice (two-step)
+        engine.proposeAdmin(alice);
+        vm.prank(alice);
+        engine.acceptAdmin();
 
         vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
         engine.setPaused(true);
 
-        // alice → bob
+        // alice → bob (two-step)
         vm.prank(alice);
-        engine.setAdmin(bob);
+        engine.proposeAdmin(bob);
+        vm.prank(bob);
+        engine.acceptAdmin();
 
         vm.prank(alice);
         vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
@@ -1012,10 +1008,10 @@ contract SecurityTest is Test {
         engine.setPaused(true);
     }
 
-    /// @notice Cannot set admin to zero address
+    /// @notice Cannot propose admin to zero address
     function test_SEC_admin_cannotSetZero() public {
         vm.expectRevert(AuraEngine.Aura__InvalidParams.selector);
-        engine.setAdmin(address(0));
+        engine.proposeAdmin(address(0));
     }
 
     // =====================================================================

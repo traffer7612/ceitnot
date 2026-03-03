@@ -315,24 +315,59 @@ contract AuraTest is Test {
         assertEq(engine.getPositionDebt(alice), 0);
     }
 
-    // ==================== Admin ====================
+    // ==================== Admin (two-step) ====================
 
-    function test_setAdmin() public {
-        engine.setAdmin(bob);
+    function test_proposeAndAcceptAdmin() public {
+        engine.proposeAdmin(bob);
+        vm.prank(bob);
+        engine.acceptAdmin();
         // Old admin should no longer have access
         vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
         engine.setPaused(true);
     }
 
-    function test_setAdmin_zeroReverts() public {
+    function test_proposeAdmin_zeroReverts() public {
         vm.expectRevert(AuraEngine.Aura__InvalidParams.selector);
-        engine.setAdmin(address(0));
+        engine.proposeAdmin(address(0));
     }
 
-    function test_setAdmin_unauthorizedReverts() public {
+    function test_proposeAdmin_unauthorizedReverts() public {
         vm.prank(alice);
         vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
-        engine.setAdmin(alice);
+        engine.proposeAdmin(alice);
+    }
+
+    function test_acceptAdmin_wrongAddressReverts() public {
+        engine.proposeAdmin(bob);
+        vm.prank(alice);
+        vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
+        engine.acceptAdmin();
+    }
+
+    // ==================== Guardian Role ====================
+
+    function test_guardianCanPause() public {
+        engine.setGuardian(alice, true);
+        vm.prank(alice);
+        engine.setPaused(true);
+    }
+
+    function test_guardianCanEmergencyShutdown() public {
+        engine.setGuardian(alice, true);
+        vm.prank(alice);
+        engine.setEmergencyShutdown(true);
+    }
+
+    function test_nonGuardianCannotPause() public {
+        vm.prank(bob);
+        vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
+        engine.setPaused(true);
+    }
+
+    function test_setGuardian_unauthorizedReverts() public {
+        vm.prank(alice);
+        vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
+        engine.setGuardian(alice, true);
     }
 
     // ==================== Harvest ====================
@@ -400,7 +435,7 @@ contract AuraTest is Test {
     // ==================== Reinitialize prevention ====================
 
     function test_initialize_twiceReverts() public {
-        vm.expectRevert(AuraEngine.Aura__InvalidParams.selector);
+        vm.expectRevert(AuraEngine.Aura__AlreadyInitialized.selector);
         engine.initialize(
             address(vault),
             address(debtToken),
@@ -411,5 +446,24 @@ contract AuraTest is Test {
             uint256(1 days),
             uint256(2 days)
         );
+    }
+
+    // ==================== _disableInitializers ====================
+
+    function test_implementationCannotBeInitialized() public {
+        AuraEngine rawImpl = new AuraEngine();
+        vm.expectRevert(AuraEngine.Aura__AlreadyInitialized.selector);
+        rawImpl.initialize(
+            address(vault), address(debtToken), address(oracle),
+            uint16(8000), uint16(8500), uint16(500), uint256(1 days), uint256(2 days)
+        );
+    }
+
+    // ==================== Keeper Role ====================
+
+    function test_setKeeper_onlyAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
+        engine.setKeeper(alice, true);
     }
 }

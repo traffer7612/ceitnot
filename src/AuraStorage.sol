@@ -60,6 +60,17 @@ library AuraStorage {
         mapping(bytes32 => uint256) timelockDeadline;
         address admin;
         mapping(bytes32 => uint256) pendingParamValue; // paramId => value to apply after timelock
+        // --- Phase 1 Security: Reentrancy guard
+        uint256 reentrancyStatus;       // 1 = NOT_ENTERED, 2 = ENTERED
+        // --- Phase 1 Security: Two-step admin transfer
+        address pendingAdmin;
+        // --- Phase 1 Security: Role-based access
+        mapping(address => bool) guardians;
+        mapping(address => bool) keepers;
+        // --- Phase 1 Security: Initializable
+        uint256 initializationVersion;  // 0 = uninitialized, type(uint256).max = disabled
+        // --- Storage gap for future upgrades
+        uint256[50] __gap;
     }
 
     /// @notice Returns the namespaced storage struct pointer

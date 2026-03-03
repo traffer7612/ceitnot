@@ -31,6 +31,9 @@ contract AuraEngine {
     error Aura__Unauthorized();
     error Aura__TimelockNotElapsed();
     error Aura__InvalidParams();
+    error Aura__Reentrancy();
+    error Aura__AlreadyInitialized();
+    error Aura__NotContract();
 
     event CollateralDeposited(address indexed user, uint256 shares);
     event CollateralWithdrawn(address indexed user, uint256 shares);
@@ -42,6 +45,17 @@ contract AuraEngine {
     event EmergencyShutdownSet(bool status);
     event PausedSet(bool status);
     event AdminTransferred(address indexed previousAdmin, address indexed newAdmin);
+    event AdminProposed(address indexed currentAdmin, address indexed pendingAdmin);
+    event GuardianSet(address indexed guardian, bool status);
+    event KeeperSet(address indexed keeper, bool status);
+
+    /// @notice EIP-1967 UUPS upgrade interface version
+    string public constant UPGRADE_INTERFACE_VERSION = "5.0.0";
+
+    /// @dev Locks the implementation contract from being initialized directly.
+    constructor() {
+        AuraStorage.getStorage().initializationVersion = type(uint256).max;
+    }
 
     /// @notice Initializer (replaces constructor for proxy). Call from proxy.
     /// @param collateralVault_ ERC-4626 vault address (e.g. stETH wrapper)
@@ -63,7 +77,7 @@ contract AuraEngine {
         uint256 timelockDelay_
     ) external {
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
-        if ($.collateralVault != address(0)) revert Aura__InvalidParams();
+        if ($.initializationVersion != 0 || $.collateralVault != address(0)) revert Aura__AlreadyInitialized();
         if (collateralVault_ == address(0) || debtToken_ == address(0) || oracleRelay_ == address(0)) revert Aura__InvalidParams();
         if (liquidationThresholdBps_ < ltvBps_ || ltvBps_ > 10_000) revert Aura__InvalidParams();
 
@@ -83,9 +97,11 @@ contract AuraEngine {
         }
         $.lastHarvestTimestamp = block.timestamp;
         $.admin = msg.sender;
+        $.initializationVersion = 1;
+        $.reentrancyStatus = 1;
     }
 
-    // ------------------------------- UUPS Upgradeability (EIP-1967)
+    // ------------------------------- UUPS
     /// @dev EIP-1967 implementation slot (literal for assembly)
     bytes32 private constant IMPLEMENTATION_SLOT =
         0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
@@ -95,6 +111,8 @@ contract AuraEngine {
     /// @param data Optional data to call on the new implementation (e.g. reinit)
     function upgradeToAndCall(address newImplementation, bytes memory data) external payable {
         if (AuraStorage.getStorage().admin != msg.sender) revert Aura__Unauthorized();
+        if (newImplementation == address(0)) revert Aura__InvalidParams();
+        if (newImplementation.code.length == 0) revert Aura__NotContract();
         assembly {
             sstore(IMPLEMENTATION_SLOT, newImplementation)
         }
@@ -114,14 +132,24 @@ contract AuraEngine {
         if (AuraStorage.getStorage().admin != msg.sender) revert Aura__Unauthorized();
     }
 
+    modifier onlyAdminOrGuardian() {
+        _onlyAdminOrGuardian();
+        _;
+    }
+
+    function _onlyAdminOrGuardian() internal view {
+        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
+        if ($.admin != msg.sender && !$.guardians[msg.sender]) revert Aura__Unauthorized();
+    }
+
     /// @notice Pause deposits, borrows, withdrawals, repayments, harvests, liquidations
-    function setPaused(bool paused_) external onlyAdmin {
+    function setPaused(bool paused_) external onlyAdminOrGuardian {
         AuraStorage.getStorage().paused = paused_;
         emit PausedSet(paused_);
     }
 
     /// @notice Emergency shutdown: disable new borrows and deposits; allow repay + withdraw
-    function setEmergencyShutdown(bool shutdown_) external onlyAdmin {
+    function setEmergencyShutdown(bool shutdown_) external onlyAdminOrGuardian {
         AuraStorage.getStorage().emergencyShutdown = shutdown_;
         emit EmergencyShutdownSet(shutdown_);
     }
@@ -173,12 +201,33 @@ contract AuraEngine {
         }
     }
 
-    /// @notice Transfer admin to a new address
-    function setAdmin(address newAdmin) external onlyAdmin {
+    /// @notice Propose a new admin. Must be accepted by the new admin via acceptAdmin().
+    function proposeAdmin(address newAdmin) external onlyAdmin {
         if (newAdmin == address(0)) revert Aura__InvalidParams();
-        address oldAdmin = AuraStorage.getStorage().admin;
-        AuraStorage.getStorage().admin = newAdmin;
-        emit AdminTransferred(oldAdmin, newAdmin);
+        AuraStorage.getStorage().pendingAdmin = newAdmin;
+        emit AdminProposed(msg.sender, newAdmin);
+    }
+
+    /// @notice Accept admin role. Must be called by the pending admin.
+    function acceptAdmin() external {
+        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
+        if (msg.sender != $.pendingAdmin) revert Aura__Unauthorized();
+        address oldAdmin = $.admin;
+        $.admin = msg.sender;
+        $.pendingAdmin = address(0);
+        emit AdminTransferred(oldAdmin, msg.sender);
+    }
+
+    /// @notice Set guardian role (can pause/emergency shutdown)
+    function setGuardian(address guardian, bool status) external onlyAdmin {
+        AuraStorage.getStorage().guardians[guardian] = status;
+        emit GuardianSet(guardian, status);
+    }
+
+    /// @notice Set keeper role (for automated harvest)
+    function setKeeper(address keeper, bool status) external onlyAdmin {
+        AuraStorage.getStorage().keepers[keeper] = status;
+        emit KeeperSet(keeper, status);
     }
 
     // ------------------------------- Modifiers (access & circuit breaker)
@@ -211,11 +260,28 @@ contract AuraEngine {
         pos.lastInteractionBlock = block.number;
     }
 
-    // ------------------------------- Core: deposit / withdraw collateral
+    /// @dev Reentrancy guard. Prevents nested calls into state-changing functions.
+    modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _nonReentrantBefore() internal {
+        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
+        if ($.reentrancyStatus == 2) revert Aura__Reentrancy();
+        $.reentrancyStatus = 2;
+    }
+
+    function _nonReentrantAfter() internal {
+        AuraStorage.getStorage().reentrancyStatus = 1;
+    }
+
+    // ------------------------------- Core:
     /// @notice Deposit ERC-4626 vault shares as collateral. Caller must approve engine.
     /// @param user Beneficiary of the collateral position (can be msg.sender or another address)
     /// @param shares Amount of vault shares to deposit (WAD)
-    function depositCollateral(address user, uint256 shares) external whenNotPaused whenNotShutdown noSameBlock(user) {
+    function depositCollateral(address user, uint256 shares) external whenNotPaused whenNotShutdown noSameBlock(user) nonReentrant {
         if (shares == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
         IERC4626 vault = IERC4626($.collateralVault);
@@ -231,7 +297,7 @@ contract AuraEngine {
     /// @notice Withdraw collateral. Reverts if health factor would go below 1. Caller must be position owner.
     /// @param user Owner of the position (must equal msg.sender)
     /// @param shares Amount of vault shares to withdraw (WAD)
-    function withdrawCollateral(address user, uint256 shares) external whenNotPaused noSameBlock(user) {
+    function withdrawCollateral(address user, uint256 shares) external whenNotPaused noSameBlock(user) nonReentrant {
         if (msg.sender != user) revert Aura__Unauthorized();
         if (shares == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
@@ -251,7 +317,7 @@ contract AuraEngine {
     /// @notice Borrow debt token. Increases position debt; must remain within LTV. Caller must be position owner.
     /// @param user Owner of the position (must equal msg.sender; receives borrowed tokens)
     /// @param amount Amount of debt token to borrow (token decimals)
-    function borrow(address user, uint256 amount) external whenNotPaused whenNotShutdown noSameBlock(user) {
+    function borrow(address user, uint256 amount) external whenNotPaused whenNotShutdown noSameBlock(user) nonReentrant {
         if (msg.sender != user) revert Aura__Unauthorized();
         if (amount == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
@@ -269,7 +335,7 @@ contract AuraEngine {
     /// @notice Repay debt. Reduces position debt. Caller must be position owner (and pays from their balance).
     /// @param user Position owner (must equal msg.sender)
     /// @param amount Amount of debt token to repay
-    function repay(address user, uint256 amount) external whenNotPaused noSameBlock(user) {
+    function repay(address user, uint256 amount) external whenNotPaused noSameBlock(user) nonReentrant {
         if (msg.sender != user) revert Aura__Unauthorized();
         if (amount == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
@@ -289,7 +355,7 @@ contract AuraEngine {
     /// @notice Harvest yield from collateral and apply to global debt scale (O(1)).
     ///         Yield = increase in collateral value (from vault share price increase) since last harvest.
     /// @return yieldApplied Amount of debt effectively repaid by yield (WAD)
-    function harvestYield() external whenNotPaused whenNotShutdown returns (uint256 yieldApplied) {
+    function harvestYield() external whenNotPaused whenNotShutdown nonReentrant returns (uint256 yieldApplied) {
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
         if (block.timestamp < $.lastHarvestTimestamp + $.heartbeat) revert Aura__HeartbeatNotElapsed();
         uint256 totalShares = $.totalCollateralShares;
@@ -334,7 +400,7 @@ contract AuraEngine {
     /// @notice Liquidate an unhealthy position: repay debt on behalf of user, receive collateral (with penalty).
     /// @param user Unhealthy position owner
     /// @param repayAmount Amount of debt to repay
-    function liquidate(address user, uint256 repayAmount) external whenNotPaused whenNotShutdown noSameBlock(user) {
+    function liquidate(address user, uint256 repayAmount) external whenNotPaused whenNotShutdown noSameBlock(user) nonReentrant {
         if (repayAmount == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
         _settlePosition($, user);
