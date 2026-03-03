@@ -1,0 +1,15 @@
+# Environment variables (may contain secrets)
+.env
+
+# Foundry build artifacts
+out/
+cache/
+broadcast/
+
+# Node.js
+node_modules/
+dist/
+
+# OS
+.DS_Store
+Thumbs.db
