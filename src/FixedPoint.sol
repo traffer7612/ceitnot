@@ -71,7 +71,7 @@ library FixedPoint {
         uint256 yieldToApply
     ) internal pure returns (uint256 newScale) {
         if (totalDebt == 0 || yieldToApply == 0) return currentScale;
-        if (yieldToApply >= totalDebt) return 0; // cap: cannot reduce debt below zero
+        if (yieldToApply >= totalDebt) return 1; // near-zero: full debt elimination; avoid 0 which reads as "uninitialized"
         // newTotalDebt = totalDebt - yieldToApply
         // newScale = currentScale * (totalDebt - yieldToApply) / totalDebt
         uint256 newTotalDebt = totalDebt - yieldToApply;

@@ -1,37 +1,37 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import { Test } from "forge-std/Test.sol";
-import { AuraEngine } from "../src/AuraEngine.sol";
-import { AuraProxy } from "../src/AuraProxy.sol";
-import { AuraStorage } from "../src/AuraStorage.sol";
-import { MockERC20 } from "./mocks/MockERC20.sol";
-import { MockVault4626 } from "./mocks/MockVault4626.sol";
+import { Test }               from "forge-std/Test.sol";
+import { AuraEngine }         from "../src/AuraEngine.sol";
+import { AuraProxy }          from "../src/AuraProxy.sol";
+import { AuraStorage }        from "../src/AuraStorage.sol";
+import { AuraMarketRegistry } from "../src/AuraMarketRegistry.sol";
+import { MockERC20 }          from "./mocks/MockERC20.sol";
+import { MockVault4626 }      from "./mocks/MockVault4626.sol";
 import { ControllableOracle } from "./mocks/ControllableOracle.sol";
-import { ControllableVault } from "./mocks/ControllableVault.sol";
+import { ControllableVault }  from "./mocks/ControllableVault.sol";
 
 // ============ Attacker contracts for reentrancy tests ============
 
 /// @notice Attempts reentrancy via vault.transfer callback during withdrawCollateral
 contract ReentrantWithdrawAttacker {
     AuraEngine public engine;
+    uint256 public marketId;
     uint256 public attackCount;
 
-    function setup(address engine_) external {
-        engine = AuraEngine(engine_);
+    function setup(address engine_, uint256 marketId_) external {
+        engine   = AuraEngine(engine_);
+        marketId = marketId_;
     }
 
     function attack(uint256 shares) external {
-        engine.withdrawCollateral(address(this), shares);
+        engine.withdrawCollateral(address(this), marketId, shares);
     }
 
-    // Simulated callback — in reality vault.transfer could trigger this
-    // but MockVault does not call back. This tests the same-block protection.
     function onTokenReceived() external {
         if (attackCount < 1) {
             attackCount++;
-            // Try reentrant withdraw — should revert due to same-block protection
-            try engine.withdrawCollateral(address(this), 1) {} catch {}
+            try engine.withdrawCollateral(address(this), marketId, 1) {} catch {}
         }
     }
 }
@@ -40,61 +40,62 @@ contract ReentrantWithdrawAttacker {
 contract FlashLoanAttacker {
     AuraEngine public engine;
     address public victim;
+    uint256 public marketId;
 
-    function setup(address engine_, address victim_) external {
-        engine = AuraEngine(engine_);
-        victim = victim_;
+    function setup(address engine_, address victim_, uint256 marketId_) external {
+        engine   = AuraEngine(engine_);
+        victim   = victim_;
+        marketId = marketId_;
     }
 
     function attackSameBlock() external {
-        // Try to liquidate — should fail due to same-block protection on victim
-        engine.liquidate(victim, 1e18);
+        engine.liquidate(victim, marketId, 1e18);
     }
 }
 
 // ============ Main Security Test Suite ============
 
 contract SecurityTest is Test {
-    AuraEngine public engine;
-    AuraProxy public proxy;
-    AuraEngine public impl;
-    MockERC20 public assetToken;
-    MockERC20 public debtToken;
-    MockVault4626 public vault;
-    ControllableOracle public oracle;
+    AuraEngine          public engine;
+    AuraProxy           public proxy;
+    AuraEngine          public impl;
+    AuraMarketRegistry  public registry;
+    MockERC20           public assetToken;
+    MockERC20           public debtToken;
+    MockVault4626       public vault;
+    ControllableOracle  public oracle;
 
     address public admin = address(this);
     address public alice = address(0xA11CE);
-    address public bob = address(0xB0B);
-    address public eve = address(0xEEE); // attacker
+    address public bob   = address(0xB0B);
+    address public eve   = address(0xEEE);
 
-    uint256 constant WAD = 1e18;
-    uint256 constant RAY = 1e27;
+    uint256 constant WAD       = 1e18;
+    uint256 constant RAY       = 1e27;
+    uint256 constant MARKET_ID = 0;
 
     function setUp() public {
         assetToken = new MockERC20("Wrapped stETH", "wstETH", 18);
-        debtToken = new MockERC20("USD Coin", "USDC", 18);
-        vault = new MockVault4626(address(assetToken), "Aura wstETH Vault", "avWSTETH");
-        oracle = new ControllableOracle(WAD); // 1:1 price
+        debtToken  = new MockERC20("USD Coin", "USDC", 18);
+        vault      = new MockVault4626(address(assetToken), "Aura wstETH Vault", "avWSTETH");
+        oracle     = new ControllableOracle(WAD);
+
+        registry = new AuraMarketRegistry(address(this));
+        registry.addMarket(
+            address(vault), address(oracle),
+            uint16(8000), uint16(8500), uint16(500),
+            0, 0, false, 0
+        );
 
         impl = new AuraEngine();
         bytes memory initData = abi.encodeCall(
             AuraEngine.initialize,
-            (
-                address(vault),
-                address(debtToken),
-                address(oracle),
-                uint16(8000),  // ltvBps 80%
-                uint16(8500),  // liquidationThresholdBps 85%
-                uint16(500),   // liquidationPenaltyBps 5%
-                uint256(1 days),
-                uint256(2 days)
-            )
+            (address(debtToken), address(registry), uint256(1 days), uint256(2 days))
         );
-        proxy = new AuraProxy(address(impl), initData);
+        proxy  = new AuraProxy(address(impl), initData);
         engine = AuraEngine(address(proxy));
+        registry.setEngine(address(proxy));
 
-        // Fund engine with debt tokens
         debtToken.mint(address(proxy), 10_000_000 * WAD);
 
         // Setup alice
@@ -115,7 +116,7 @@ contract SecurityTest is Test {
         debtToken.approve(address(proxy), type(uint256).max);
         vm.stopPrank();
 
-        // Setup eve (attacker)
+        // Setup eve
         assetToken.mint(eve, 100_000 * WAD);
         debtToken.mint(eve, 100_000 * WAD);
         vm.startPrank(eve);
@@ -133,40 +134,40 @@ contract SecurityTest is Test {
     /// @notice Same-block reentrancy: deposit + withdraw in one tx should revert
     function test_SEC_reentrancy_depositThenWithdrawSameBlock() public {
         vm.startPrank(alice);
-        engine.depositCollateral(alice, 100 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
         vm.expectRevert(AuraEngine.Aura__SameBlockInteraction.selector);
-        engine.withdrawCollateral(alice, 50 * WAD);
+        engine.withdrawCollateral(alice, MARKET_ID, 50 * WAD);
         vm.stopPrank();
     }
 
     /// @notice Same-block reentrancy: deposit + borrow in one tx should revert
     function test_SEC_reentrancy_depositThenBorrowSameBlock() public {
         vm.startPrank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.expectRevert(AuraEngine.Aura__SameBlockInteraction.selector);
-        engine.borrow(alice, 100 * WAD);
+        engine.borrow(alice, MARKET_ID, 100 * WAD);
         vm.stopPrank();
     }
 
     /// @notice Same-block reentrancy: borrow + repay in one tx should revert
     function test_SEC_reentrancy_borrowThenRepaySameBlock() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
 
         vm.startPrank(alice);
-        engine.borrow(alice, 100 * WAD);
+        engine.borrow(alice, MARKET_ID, 100 * WAD);
         vm.expectRevert(AuraEngine.Aura__SameBlockInteraction.selector);
-        engine.repay(alice, 50 * WAD);
+        engine.repay(alice, MARKET_ID, 50 * WAD);
         vm.stopPrank();
     }
 
     /// @notice Same-block reentrancy: two deposits in same block should revert
     function test_SEC_reentrancy_doubleDepositSameBlock() public {
         vm.startPrank(alice);
-        engine.depositCollateral(alice, 100 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
         vm.expectRevert(AuraEngine.Aura__SameBlockInteraction.selector);
-        engine.depositCollateral(alice, 100 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
         vm.stopPrank();
     }
 
@@ -177,111 +178,85 @@ contract SecurityTest is Test {
     /// @notice Attacker cannot deposit, borrow max, then withdraw in same block
     function test_SEC_flashLoan_depositBorrowWithdrawSameBlock() public {
         vm.startPrank(eve);
-        engine.depositCollateral(eve, 10_000 * WAD);
-        // Can't borrow in same block
+        engine.depositCollateral(eve, MARKET_ID, 10_000 * WAD);
         vm.expectRevert(AuraEngine.Aura__SameBlockInteraction.selector);
-        engine.borrow(eve, 7999 * WAD);
+        engine.borrow(eve, MARKET_ID, 7999 * WAD);
         vm.stopPrank();
     }
 
     /// @notice Cannot manipulate oracle price and liquidate in same block as victim's action
     function test_SEC_flashLoan_manipulateAndLiquidateSameBlock() public {
-        // Alice deposits and borrows normally
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 700 * WAD); // 70% LTV
+        engine.borrow(alice, MARKET_ID, 700 * WAD);
 
-        // Eve tries to liquidate alice in next block after oracle drop
         vm.roll(20);
-        oracle.setPrice(WAD / 2); // price crashes 50%
+        oracle.setPrice(WAD / 2);
 
-        // Alice's HF should be below 1 now, but if alice had an interaction this block,
-        // same-block would protect. Here we verify liquidation works in next block.
         vm.prank(eve);
-        engine.liquidate(alice, 100 * WAD);
+        engine.liquidate(alice, MARKET_ID, 100 * WAD);
 
-        // But alice cannot repay + withdraw in the same block she was liquidated
-        // because liquidate already set her lastInteractionBlock
         vm.prank(alice);
         vm.expectRevert(AuraEngine.Aura__SameBlockInteraction.selector);
-        engine.repay(alice, 100 * WAD);
+        engine.repay(alice, MARKET_ID, 100 * WAD);
     }
 
     // =====================================================================
     //  3. ORACLE MANIPULATION
     // =====================================================================
 
-    /// @notice Zero oracle price should prevent new borrows (division by zero protection)
+    /// @notice Zero oracle price should prevent new borrows
     function test_SEC_oracle_zeroPricePreventsNewBorrows() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
-
         oracle.setPrice(0);
-
-        // With price = 0, collateral value = 0, any borrow should exceed LTV
         vm.prank(alice);
         vm.expectRevert(AuraEngine.Aura__ExceedsLTV.selector);
-        engine.borrow(alice, 1 * WAD);
+        engine.borrow(alice, MARKET_ID, 1 * WAD);
     }
 
     /// @notice Oracle price crash should make positions liquidatable
     function test_SEC_oracle_priceCrashMakesLiquidatable() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 700 * WAD); // 70% LTV
-
+        engine.borrow(alice, MARKET_ID, 700 * WAD);
         uint256 hfBefore = engine.getHealthFactor(alice);
-        assertTrue(hfBefore > WAD, "Should be healthy before crash");
-
-        // Oracle price drops 50%
+        assertTrue(hfBefore > WAD);
         oracle.setPrice(WAD / 2);
-
         uint256 hfAfter = engine.getHealthFactor(alice);
-        assertTrue(hfAfter < WAD, "Should be unhealthy after crash");
+        assertTrue(hfAfter < WAD);
     }
 
     /// @notice Extreme oracle price spike should not allow unbounded borrowing
     function test_SEC_oracle_priceSpikeBorrowLimit() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 100 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
         vm.roll(10);
-
-        // Oracle reports 1000x normal price
         oracle.setPrice(1000 * WAD);
-
         vm.prank(alice);
-        // Even with inflated collateral value, borrowing is limited by engine's debt token balance
-        // The LTV check uses: debt * 10000 > collateralValue * ltvBps
-        // collateralValue = 100 * 1000 = 100,000
-        // maxBorrow = 100000 * 80% = 80,000
-        engine.borrow(alice, 80_000 * WAD);
-        assertEq(engine.getPositionDebt(alice), 80_000 * WAD);
-
-        // But cannot exceed LTV
+        engine.borrow(alice, MARKET_ID, 80_000 * WAD);
+        assertEq(engine.getPositionDebt(alice, MARKET_ID), 80_000 * WAD);
         vm.roll(20);
         vm.prank(alice);
         vm.expectRevert(AuraEngine.Aura__ExceedsLTV.selector);
-        engine.borrow(alice, 1 * WAD); // over the limit
+        engine.borrow(alice, MARKET_ID, 1 * WAD);
     }
 
     /// @notice Harvest should handle zero oracle price gracefully (returns 0)
     function test_SEC_oracle_zeroPriceHarvestReturnsZero() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 500 * WAD);
-
+        engine.borrow(alice, MARKET_ID, 500 * WAD);
         oracle.setPrice(0);
         vm.warp(block.timestamp + 2 days);
-
-        // Harvest with zero price should return 0 (no yield applied)
-        uint256 yield = engine.harvestYield();
+        uint256 yield = engine.harvestYield(MARKET_ID);
         assertEq(yield, 0);
     }
 
@@ -289,119 +264,90 @@ contract SecurityTest is Test {
     //  4. LIQUIDATION EXPLOITS
     // =====================================================================
 
-    /// @notice Self-liquidation: user cannot liquidate their own position in same block
+    /// @notice Self-liquidation: user can liquidate their own position (technically allowed)
     function test_SEC_liquidation_selfLiquidationSameBlock() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 700 * WAD);
-
-        // Price drops — position becomes unhealthy
+        engine.borrow(alice, MARKET_ID, 700 * WAD);
         vm.roll(20);
         oracle.setPrice(WAD / 2);
-
-        // Alice tries to liquidate herself — this actually works (no check prevents it)
-        // But she needs debt tokens. She already has 700 from borrowing.
         vm.prank(alice);
-        engine.liquidate(alice, 100 * WAD);
-
-        // Verify she got collateral back with penalty discount
-        // This is technically allowed but alice pays the penalty herself
-        assertTrue(engine.getPositionCollateralShares(alice) < 1000 * WAD);
+        engine.liquidate(alice, MARKET_ID, 100 * WAD);
+        assertTrue(engine.getPositionCollateralShares(alice, MARKET_ID) < 1000 * WAD);
     }
 
     /// @notice Cannot liquidate a healthy position
     function test_SEC_liquidation_healthyPositionReverts() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 100 * WAD); // very healthy
-
+        engine.borrow(alice, MARKET_ID, 100 * WAD);
         vm.roll(20);
         vm.prank(eve);
         vm.expectRevert(AuraEngine.Aura__HealthFactorAboveOne.selector);
-        engine.liquidate(alice, 10 * WAD);
+        engine.liquidate(alice, MARKET_ID, 10 * WAD);
     }
 
     /// @notice Liquidation repay amount is capped at actual debt
     function test_SEC_liquidation_repayAmountCappedAtDebt() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 700 * WAD);
-
+        engine.borrow(alice, MARKET_ID, 700 * WAD);
         vm.roll(20);
         oracle.setPrice(WAD / 2);
-
         vm.prank(eve);
-        engine.liquidate(alice, 999_999 * WAD); // way more than debt
-
-        // Should have repaid exactly debtBefore, not more
-        assertEq(engine.getPositionDebt(alice), 0);
+        engine.liquidate(alice, MARKET_ID, 999_999 * WAD);
+        assertEq(engine.getPositionDebt(alice, MARKET_ID), 0);
     }
 
     /// @notice Collateral seized capped at available collateral
     function test_SEC_liquidation_collateralSeizedCappedAtAvailable() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 100 * WAD); // small collateral
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 79 * WAD); // near max LTV
-
-        // Severe price crash makes collateral worth less than debt + penalty
+        engine.borrow(alice, MARKET_ID, 79 * WAD);
         vm.roll(20);
-        oracle.setPrice(WAD / 10); // 90% crash
-
+        oracle.setPrice(WAD / 10);
         vm.prank(eve);
-        engine.liquidate(alice, 79 * WAD);
-
-        // All collateral should be seized (capped)
-        assertEq(engine.getPositionCollateralShares(alice), 0);
+        engine.liquidate(alice, MARKET_ID, 79 * WAD);
+        assertEq(engine.getPositionCollateralShares(alice, MARKET_ID), 0);
     }
 
     /// @notice Liquidation with zero repayAmount reverts
     function test_SEC_liquidation_zeroAmountReverts() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 700 * WAD);
-
+        engine.borrow(alice, MARKET_ID, 700 * WAD);
         vm.roll(20);
         oracle.setPrice(WAD / 2);
-
         vm.prank(eve);
         vm.expectRevert(AuraEngine.Aura__ZeroAmount.selector);
-        engine.liquidate(alice, 0);
+        engine.liquidate(alice, MARKET_ID, 0);
     }
 
     /// @notice Liquidation penalty math correctness
     function test_SEC_liquidation_penaltyCalculation() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 800 * WAD); // 80% LTV
-
+        engine.borrow(alice, MARKET_ID, 800 * WAD);
         vm.roll(20);
-        // Need price < 0.68 to push HF below 1 with liqThreshold=85% and debt=800
-        oracle.setPrice(WAD * 6 / 10); // 40% price drop
-
-        uint256 collBefore = engine.getPositionCollateralShares(alice);
+        oracle.setPrice(WAD * 6 / 10);
+        uint256 collBefore = engine.getPositionCollateralShares(alice, MARKET_ID);
         uint256 repay = 100 * WAD;
-
         vm.prank(eve);
-        engine.liquidate(alice, repay);
-
-        uint256 collAfter = engine.getPositionCollateralShares(alice);
+        engine.liquidate(alice, MARKET_ID, repay);
+        uint256 collAfter = engine.getPositionCollateralShares(alice, MARKET_ID);
         uint256 seized = collBefore - collAfter;
-
-        // collateralToSeize = (repayAmount * (10000 + penaltyBps) * WAD) / (10000 * valuePerShare)
-        // With 5% penalty, valuePerShare = 0.6 WAD:
-        // seized = (100 * 10500 * 1e18) / (10000 * 0.6e18) = 100 * 1.05 / 0.6 = 175
         uint256 expectedSeized = (repay * 10500 * WAD) / (10000 * (WAD * 6 / 10));
         assertApproxEqAbs(seized, expectedSeized, 1);
     }
@@ -410,45 +356,38 @@ contract SecurityTest is Test {
     //  5. ACCESS CONTROL
     // =====================================================================
 
-    /// @notice Non-admin cannot pause
     function test_SEC_access_nonAdminCannotPause() public {
         vm.prank(eve);
         vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
         engine.setPaused(true);
     }
 
-    /// @notice Non-admin cannot set emergency shutdown
     function test_SEC_access_nonAdminCannotShutdown() public {
         vm.prank(eve);
         vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
         engine.setEmergencyShutdown(true);
     }
 
-    /// @notice Non-admin cannot transfer admin
     function test_SEC_access_nonAdminCannotTransferAdmin() public {
         vm.prank(eve);
         vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
         engine.proposeAdmin(eve);
     }
 
-    /// @notice Non-admin cannot propose params
     function test_SEC_access_nonAdminCannotProposeParam() public {
         vm.prank(eve);
         vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
-        engine.proposeParam(keccak256("ltvBps"), 9000);
+        engine.proposeMarketParam(MARKET_ID, keccak256("ltvBps"), 9000);
     }
 
-    /// @notice Non-admin cannot execute params
     function test_SEC_access_nonAdminCannotExecuteParam() public {
-        engine.proposeParam(keccak256("ltvBps"), 7500);
+        engine.proposeMarketParam(MARKET_ID, keccak256("ltvBps"), 7500);
         vm.warp(block.timestamp + 3 days);
-
         vm.prank(eve);
         vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
-        engine.executeParam(keccak256("ltvBps"));
+        engine.executeMarketParam(MARKET_ID, keccak256("ltvBps"));
     }
 
-    /// @notice Non-admin cannot upgrade proxy
     function test_SEC_access_nonAdminCannotUpgrade() public {
         AuraEngine newImpl = new AuraEngine();
         vm.prank(eve);
@@ -456,314 +395,243 @@ contract SecurityTest is Test {
         engine.upgradeToAndCall(address(newImpl), "");
     }
 
-    /// @notice Non-owner cannot borrow for another user
     function test_SEC_access_cannotBorrowForOther() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
-
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(eve);
         vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
-        engine.borrow(alice, 100 * WAD);
+        engine.borrow(alice, MARKET_ID, 100 * WAD);
     }
 
-    /// @notice Non-owner cannot withdraw for another user
     function test_SEC_access_cannotWithdrawForOther() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
-
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(eve);
         vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
-        engine.withdrawCollateral(alice, 100 * WAD);
+        engine.withdrawCollateral(alice, MARKET_ID, 100 * WAD);
     }
 
-    /// @notice Non-owner cannot repay for another user
     function test_SEC_access_cannotRepayForOther() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 100 * WAD);
-
+        engine.borrow(alice, MARKET_ID, 100 * WAD);
         vm.roll(20);
         vm.prank(eve);
         vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
-        engine.repay(alice, 50 * WAD);
+        engine.repay(alice, MARKET_ID, 50 * WAD);
     }
 
     // =====================================================================
     //  6. PROXY / UPGRADE ATTACKS
     // =====================================================================
 
-    /// @notice Cannot re-initialize the proxy (already initialized)
     function test_SEC_proxy_reinitializeReverts() public {
         vm.expectRevert(AuraEngine.Aura__AlreadyInitialized.selector);
-        engine.initialize(
-            address(vault), address(debtToken), address(oracle),
-            8000, 8500, 500, 1 days, 2 days
-        );
+        engine.initialize(address(debtToken), address(registry), 1 days, 2 days);
     }
 
-    /// @notice Implementation contract is locked from direct initialization (_disableInitializers)
     function test_SEC_proxy_implementationLockedFromInit() public {
         AuraEngine rawImpl = new AuraEngine();
-        // Constructor calls _disableInitializers — init should revert
         vm.expectRevert(AuraEngine.Aura__AlreadyInitialized.selector);
-        rawImpl.initialize(
-            address(vault), address(debtToken), address(oracle),
-            8000, 8500, 500, 1 days, 2 days
-        );
+        rawImpl.initialize(address(debtToken), address(registry), 1 days, 2 days);
     }
 
-    /// @notice Admin can upgrade to new implementation
     function test_SEC_proxy_adminCanUpgrade() public {
         AuraEngine newImpl = new AuraEngine();
         engine.upgradeToAndCall(address(newImpl), "");
-        // State should be preserved through upgrade
-        assertEq(engine.ltvBps(), 8000);
+        assertEq(engine.getMarket(MARKET_ID).ltvBps, 8000);
     }
 
     // =====================================================================
     //  7. TIMELOCK BYPASS ATTEMPTS
     // =====================================================================
 
-    /// @notice Cannot execute param before timelock elapses
     function test_SEC_timelock_executeBeforeDelayReverts() public {
-        engine.proposeParam(keccak256("ltvBps"), 7500);
-        vm.warp(block.timestamp + 1 days); // only 1 day, need 2
-
+        engine.proposeMarketParam(MARKET_ID, keccak256("ltvBps"), 7500);
+        vm.warp(block.timestamp + 1 days);
         vm.expectRevert(AuraEngine.Aura__TimelockNotElapsed.selector);
-        engine.executeParam(keccak256("ltvBps"));
+        engine.executeMarketParam(MARKET_ID, keccak256("ltvBps"));
     }
 
-    /// @notice Cannot set LTV above liquidation threshold
     function test_SEC_timelock_ltvAboveLiqThresholdReverts() public {
         bytes32 paramId = keccak256("ltvBps");
-        engine.proposeParam(paramId, 9000); // > 8500 liqThreshold
+        engine.proposeMarketParam(MARKET_ID, paramId, 9000);
         vm.warp(block.timestamp + 3 days);
-
         vm.expectRevert(AuraEngine.Aura__InvalidParams.selector);
-        engine.executeParam(paramId);
+        engine.executeMarketParam(MARKET_ID, paramId);
     }
 
-    /// @notice Cannot set liquidation threshold below LTV
     function test_SEC_timelock_liqThresholdBelowLtvReverts() public {
         bytes32 paramId = keccak256("liquidationThresholdBps");
-        engine.proposeParam(paramId, 5000); // < 8000 ltv
+        engine.proposeMarketParam(MARKET_ID, paramId, 5000);
         vm.warp(block.timestamp + 3 days);
-
         vm.expectRevert(AuraEngine.Aura__InvalidParams.selector);
-        engine.executeParam(paramId);
+        engine.executeMarketParam(MARKET_ID, paramId);
     }
 
-    /// @notice Invalid param ID reverts
     function test_SEC_timelock_invalidParamIdReverts() public {
         bytes32 paramId = keccak256("nonExistentParam");
-        engine.proposeParam(paramId, 1000);
+        engine.proposeMarketParam(MARKET_ID, paramId, 1000);
         vm.warp(block.timestamp + 3 days);
-
         vm.expectRevert(AuraEngine.Aura__InvalidParams.selector);
-        engine.executeParam(paramId);
+        engine.executeMarketParam(MARKET_ID, paramId);
     }
 
-    /// @notice LTV > 10000 (100%) reverts
     function test_SEC_timelock_ltvOver100PercentReverts() public {
         bytes32 paramId = keccak256("ltvBps");
-        engine.proposeParam(paramId, 10001);
+        engine.proposeMarketParam(MARKET_ID, paramId, 10001);
         vm.warp(block.timestamp + 3 days);
-
         vm.expectRevert(AuraEngine.Aura__InvalidParams.selector);
-        engine.executeParam(paramId);
+        engine.executeMarketParam(MARKET_ID, paramId);
     }
 
     // =====================================================================
     //  8. EMERGENCY SHUTDOWN & PAUSE
     // =====================================================================
 
-    /// @notice Paused: all core operations blocked
     function test_SEC_pause_allOperationsBlocked() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 100 * WAD);
-
+        engine.borrow(alice, MARKET_ID, 100 * WAD);
         engine.setPaused(true);
-
         vm.roll(20);
         vm.startPrank(alice);
-
         vm.expectRevert(AuraEngine.Aura__Paused.selector);
-        engine.depositCollateral(alice, 100 * WAD);
-
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
         vm.expectRevert(AuraEngine.Aura__Paused.selector);
-        engine.withdrawCollateral(alice, 50 * WAD);
-
+        engine.withdrawCollateral(alice, MARKET_ID, 50 * WAD);
         vm.expectRevert(AuraEngine.Aura__Paused.selector);
-        engine.borrow(alice, 10 * WAD);
-
+        engine.borrow(alice, MARKET_ID, 10 * WAD);
         vm.expectRevert(AuraEngine.Aura__Paused.selector);
-        engine.repay(alice, 10 * WAD);
-
+        engine.repay(alice, MARKET_ID, 10 * WAD);
         vm.stopPrank();
-
         vm.expectRevert(AuraEngine.Aura__Paused.selector);
-        engine.harvestYield();
-
+        engine.harvestYield(MARKET_ID);
         oracle.setPrice(WAD / 2);
         vm.prank(eve);
         vm.expectRevert(AuraEngine.Aura__Paused.selector);
-        engine.liquidate(alice, 10 * WAD);
+        engine.liquidate(alice, MARKET_ID, 10 * WAD);
     }
 
-    /// @notice Emergency shutdown: deposit and borrow blocked, withdraw and repay work
     function test_SEC_shutdown_selectiveBlocking() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 100 * WAD);
-
+        engine.borrow(alice, MARKET_ID, 100 * WAD);
         engine.setEmergencyShutdown(true);
-
         vm.roll(20);
-
-        // Deposit blocked
         vm.prank(alice);
         vm.expectRevert(AuraEngine.Aura__EmergencyShutdown.selector);
-        engine.depositCollateral(alice, 100 * WAD);
-
-        // Borrow blocked
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
         vm.roll(30);
         vm.prank(alice);
         vm.expectRevert(AuraEngine.Aura__EmergencyShutdown.selector);
-        engine.borrow(alice, 10 * WAD);
-
-        // Repay still works
+        engine.borrow(alice, MARKET_ID, 10 * WAD);
         vm.roll(40);
         vm.prank(alice);
-        engine.repay(alice, 50 * WAD);
-        assertEq(engine.getPositionDebt(alice), 50 * WAD);
-
-        // Withdraw still works
+        engine.repay(alice, MARKET_ID, 50 * WAD);
+        assertEq(engine.getPositionDebt(alice, MARKET_ID), 50 * WAD);
         vm.roll(50);
         vm.prank(alice);
-        engine.withdrawCollateral(alice, 100 * WAD);
+        engine.withdrawCollateral(alice, MARKET_ID, 100 * WAD);
     }
 
-    /// @notice Harvest blocked during emergency shutdown
     function test_SEC_shutdown_harvestBlocked() public {
         engine.setEmergencyShutdown(true);
         vm.warp(block.timestamp + 2 days);
-
         vm.expectRevert(AuraEngine.Aura__EmergencyShutdown.selector);
-        engine.harvestYield();
+        engine.harvestYield(MARKET_ID);
     }
 
-    /// @notice Liquidation blocked during emergency shutdown
     function test_SEC_shutdown_liquidationBlocked() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 700 * WAD);
-
+        engine.borrow(alice, MARKET_ID, 700 * WAD);
         engine.setEmergencyShutdown(true);
         oracle.setPrice(WAD / 2);
-
         vm.roll(20);
         vm.prank(eve);
         vm.expectRevert(AuraEngine.Aura__EmergencyShutdown.selector);
-        engine.liquidate(alice, 100 * WAD);
+        engine.liquidate(alice, MARKET_ID, 100 * WAD);
     }
 
     // =====================================================================
     //  9. YIELD SIPHON / HARVEST MANIPULATION
     // =====================================================================
 
-    /// @notice Harvest with no yield change returns 0
     function test_SEC_harvest_noYieldChangeReturnsZero() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 500 * WAD);
-
+        engine.borrow(alice, MARKET_ID, 500 * WAD);
         vm.warp(block.timestamp + 2 days);
-        // MockVault has fixed 1:1 ratio, no yield
-        uint256 yield = engine.harvestYield();
+        uint256 yield = engine.harvestYield(MARKET_ID);
         assertEq(yield, 0);
     }
 
-    /// @notice Harvest heartbeat protection
     function test_SEC_harvest_heartbeatProtection() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
-
-        // Immediately after setup — heartbeat not elapsed
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.expectRevert(AuraEngine.Aura__HeartbeatNotElapsed.selector);
-        engine.harvestYield();
+        engine.harvestYield(MARKET_ID);
     }
 
     // =====================================================================
     //  10. INITIALIZATION ATTACKS
     // =====================================================================
 
-    /// @notice Initialize with zero addresses reverts
+    /// @notice Initialize with zero debtToken reverts
     function test_SEC_init_zeroAddressReverts() public {
         AuraEngine newImpl = new AuraEngine();
+        // debtToken = address(0) → revert
         vm.expectRevert(AuraEngine.Aura__InvalidParams.selector);
         new AuraProxy(
             address(newImpl),
             abi.encodeCall(
                 AuraEngine.initialize,
-                (address(0), address(debtToken), address(oracle), 8000, 8500, 500, 1 days, 2 days)
+                (address(0), address(registry), uint256(1 days), uint256(2 days))
             )
         );
-
+        // marketRegistry = address(0) → revert
         vm.expectRevert(AuraEngine.Aura__InvalidParams.selector);
         new AuraProxy(
             address(newImpl),
             abi.encodeCall(
                 AuraEngine.initialize,
-                (address(vault), address(0), address(oracle), 8000, 8500, 500, 1 days, 2 days)
-            )
-        );
-
-        vm.expectRevert(AuraEngine.Aura__InvalidParams.selector);
-        new AuraProxy(
-            address(newImpl),
-            abi.encodeCall(
-                AuraEngine.initialize,
-                (address(vault), address(debtToken), address(0), 8000, 8500, 500, 1 days, 2 days)
+                (address(debtToken), address(0), uint256(1 days), uint256(2 days))
             )
         );
     }
 
-    /// @notice Initialize with LTV > liquidation threshold reverts
+    /// @notice Registry addMarket with LTV > liquidation threshold reverts
     function test_SEC_init_ltvGtLiqThresholdReverts() public {
-        AuraEngine newImpl = new AuraEngine();
-        vm.expectRevert(AuraEngine.Aura__InvalidParams.selector);
-        new AuraProxy(
-            address(newImpl),
-            abi.encodeCall(
-                AuraEngine.initialize,
-                (address(vault), address(debtToken), address(oracle), 9000, 8500, 500, 1 days, 2 days)
-            )
+        AuraMarketRegistry badRegistry = new AuraMarketRegistry(address(this));
+        vm.expectRevert(AuraMarketRegistry.Registry__InvalidParams.selector);
+        badRegistry.addMarket(
+            address(vault), address(oracle),
+            uint16(9000), uint16(8500), uint16(500),
+            0, 0, false, 0
         );
     }
 
-    /// @notice Initialize with LTV > 100% reverts
+    /// @notice Registry addMarket with LTV > 100% reverts
     function test_SEC_init_ltvOver100Reverts() public {
-        AuraEngine newImpl = new AuraEngine();
-        vm.expectRevert(AuraEngine.Aura__InvalidParams.selector);
-        new AuraProxy(
-            address(newImpl),
-            abi.encodeCall(
-                AuraEngine.initialize,
-                (address(vault), address(debtToken), address(oracle), 10001, 10002, 500, 1 days, 2 days)
-            )
+        AuraMarketRegistry badRegistry = new AuraMarketRegistry(address(this));
+        vm.expectRevert(AuraMarketRegistry.Registry__InvalidParams.selector);
+        badRegistry.addMarket(
+            address(vault), address(oracle),
+            uint16(10001), uint16(10001), uint16(500),
+            0, 0, false, 0
         );
     }
 
@@ -771,113 +639,99 @@ contract SecurityTest is Test {
     //  11. INTEGER / EDGE CASES
     // =====================================================================
 
-    /// @notice Zero amount operations revert
     function test_SEC_edge_zeroAmountsRevert() public {
         vm.startPrank(alice);
         vm.expectRevert(AuraEngine.Aura__ZeroAmount.selector);
-        engine.depositCollateral(alice, 0);
+        engine.depositCollateral(alice, MARKET_ID, 0);
         vm.stopPrank();
-
         vm.prank(alice);
-        engine.depositCollateral(alice, 100 * WAD);
-
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
         vm.roll(10);
         vm.prank(alice);
         vm.expectRevert(AuraEngine.Aura__ZeroAmount.selector);
-        engine.withdrawCollateral(alice, 0);
-
+        engine.withdrawCollateral(alice, MARKET_ID, 0);
         vm.roll(20);
         vm.prank(alice);
         vm.expectRevert(AuraEngine.Aura__ZeroAmount.selector);
-        engine.borrow(alice, 0);
+        engine.borrow(alice, MARKET_ID, 0);
     }
 
-    /// @notice Withdraw more than deposited reverts
     function test_SEC_edge_withdrawMoreThanDeposited() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 100 * WAD);
-
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
         vm.roll(10);
         vm.prank(alice);
         vm.expectRevert(AuraEngine.Aura__InsufficientCollateral.selector);
-        engine.withdrawCollateral(alice, 200 * WAD);
+        engine.withdrawCollateral(alice, MARKET_ID, 200 * WAD);
     }
 
-    /// @notice Repay more than debt caps to actual debt
     function test_SEC_edge_repayMoreThanDebtCaps() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 100 * WAD);
-
+        engine.borrow(alice, MARKET_ID, 100 * WAD);
         debtToken.mint(alice, 1_000_000 * WAD);
-
         vm.roll(20);
         vm.prank(alice);
-        engine.repay(alice, 999_999 * WAD);
-
-        assertEq(engine.getPositionDebt(alice), 0);
+        engine.repay(alice, MARKET_ID, 999_999 * WAD);
+        assertEq(engine.getPositionDebt(alice, MARKET_ID), 0);
     }
 
-    /// @notice No-debt position has max health factor
     function test_SEC_edge_noDebtMaxHealthFactor() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
-
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         assertEq(engine.getHealthFactor(alice), type(uint256).max);
     }
 
-    /// @notice Empty position (no collateral, no debt) — health factor is max
     function test_SEC_edge_emptyPositionHealthFactor() public {
         assertEq(engine.getHealthFactor(eve), type(uint256).max);
-        assertEq(engine.getPositionDebt(eve), 0);
-        assertEq(engine.getPositionCollateralShares(eve), 0);
+        assertEq(engine.getPositionDebt(eve, MARKET_ID), 0);
+        assertEq(engine.getPositionCollateralShares(eve, MARKET_ID), 0);
     }
 
     // =====================================================================
     //  12. DONATION / VAULT SHARE PRICE INFLATION ATTACK
     // =====================================================================
 
-    /// @notice Vault share price inflation should not affect existing positions unfairly
     function test_SEC_donation_vaultSharePriceInflation() public {
-        // Use controllable vault
         ControllableVault cVault = new ControllableVault(address(assetToken));
         ControllableOracle cOracle = new ControllableOracle(WAD);
 
+        AuraMarketRegistry cRegistry = new AuraMarketRegistry(address(this));
+        cRegistry.addMarket(
+            address(cVault), address(cOracle),
+            uint16(8000), uint16(8500), uint16(500),
+            0, 0, false, 0
+        );
         AuraEngine cImpl = new AuraEngine();
         AuraProxy cProxy = new AuraProxy(
             address(cImpl),
             abi.encodeCall(
                 AuraEngine.initialize,
-                (address(cVault), address(debtToken), address(cOracle), 8000, 8500, 500, 1 days, 2 days)
+                (address(debtToken), address(cRegistry), uint256(1 days), uint256(2 days))
             )
         );
         AuraEngine cEngine = AuraEngine(address(cProxy));
+        cRegistry.setEngine(address(cProxy));
         debtToken.mint(address(cProxy), 10_000_000 * WAD);
 
-        // Alice deposits 1000 shares at 1:1
         assetToken.mint(alice, 1000 * WAD);
         vm.startPrank(alice);
         assetToken.approve(address(cVault), type(uint256).max);
         cVault.deposit(1000 * WAD, alice);
         cVault.approve(address(cProxy), type(uint256).max);
-        cEngine.depositCollateral(alice, 1000 * WAD);
+        cEngine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.stopPrank();
 
         vm.roll(10);
         vm.prank(alice);
-        cEngine.borrow(alice, 500 * WAD);
+        cEngine.borrow(alice, MARKET_ID, 500 * WAD);
 
-        // Attacker inflates vault share price 10x
         cVault.setPricePerShare(10 * WAD);
-
-        // Alice's collateral value is now 10x, but her debt is unchanged
-        // HF should increase (more healthy) — this is NOT an exploit, it benefits alice
         uint256 hf = cEngine.getHealthFactor(alice);
         assertTrue(hf > WAD * 10);
 
-        // But if price goes back down, position returns to normal risk
         cVault.setPricePerShare(WAD);
         uint256 hfNormal = cEngine.getHealthFactor(alice);
         assertTrue(hfNormal > WAD && hfNormal < WAD * 5);
@@ -887,82 +741,61 @@ contract SecurityTest is Test {
     //  13. DEBT SCALE EDGE CASES
     // =====================================================================
 
-    /// @notice Multiple users with different scales settle correctly
     function test_SEC_debtScale_multiUserSettlement() public {
-        // Alice deposits and borrows
         vm.prank(alice);
-        engine.depositCollateral(alice, 10_000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 10_000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 5000 * WAD);
-
-        // Bob deposits and borrows
+        engine.borrow(alice, MARKET_ID, 5000 * WAD);
         vm.roll(20);
         vm.prank(bob);
-        engine.depositCollateral(bob, 10_000 * WAD);
+        engine.depositCollateral(bob, MARKET_ID, 10_000 * WAD);
         vm.roll(30);
         vm.prank(bob);
-        engine.borrow(bob, 3000 * WAD);
-
-        // Both debts should be correct
-        assertEq(engine.getPositionDebt(alice), 5000 * WAD);
-        assertEq(engine.getPositionDebt(bob), 3000 * WAD);
-
-        // Total debt
-        assertEq(engine.totalDebt(), 8000 * WAD);
+        engine.borrow(bob, MARKET_ID, 3000 * WAD);
+        assertEq(engine.getPositionDebt(alice, MARKET_ID), 5000 * WAD);
+        assertEq(engine.getPositionDebt(bob, MARKET_ID), 3000 * WAD);
+        assertEq(engine.totalDebt(MARKET_ID), 8000 * WAD);
     }
 
-    /// @notice Repaying all debt leaves zero
     function test_SEC_debtScale_fullRepayLeavesZero() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 10_000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 10_000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 5000 * WAD);
-
+        engine.borrow(alice, MARKET_ID, 5000 * WAD);
         debtToken.mint(alice, 10_000 * WAD);
-
         vm.roll(20);
         vm.prank(alice);
-        engine.repay(alice, 5000 * WAD);
-
-        assertEq(engine.getPositionDebt(alice), 0);
+        engine.repay(alice, MARKET_ID, 5000 * WAD);
+        assertEq(engine.getPositionDebt(alice, MARKET_ID), 0);
     }
 
     // =====================================================================
     //  14. WITHDRAW HEALTH FACTOR CHECK
     // =====================================================================
 
-    /// @notice Cannot withdraw collateral if it would make position unhealthy
     function test_SEC_withdraw_wouldMakeUnhealthy() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 700 * WAD); // 70% LTV
-
-        // Try to withdraw most collateral — would push HF below 1
+        engine.borrow(alice, MARKET_ID, 700 * WAD);
         vm.roll(20);
         vm.prank(alice);
         vm.expectRevert(AuraEngine.Aura__HealthFactorBelowOne.selector);
-        engine.withdrawCollateral(alice, 900 * WAD);
+        engine.withdrawCollateral(alice, MARKET_ID, 900 * WAD);
     }
 
-    /// @notice Can withdraw collateral down to exactly LTV boundary
     function test_SEC_withdraw_toExactHealthBoundary() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 1000 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.roll(10);
         vm.prank(alice);
-        engine.borrow(alice, 100 * WAD); // 10% LTV
-
-        // Can withdraw significant amount since debt is low
-        // With 100 debt and liqThreshold 85%, need collateral >= 100/0.85 ≈ 117.65
-        // So can withdraw up to ~882 shares
+        engine.borrow(alice, MARKET_ID, 100 * WAD);
         vm.roll(20);
         vm.prank(alice);
-        engine.withdrawCollateral(alice, 880 * WAD);
-
+        engine.withdrawCollateral(alice, MARKET_ID, 880 * WAD);
         assertTrue(engine.getHealthFactor(alice) >= WAD);
     }
 
@@ -970,13 +803,10 @@ contract SecurityTest is Test {
     //  15. DEPOSIT FOR OTHER USER
     // =====================================================================
 
-    /// @notice Anyone can deposit collateral for another user
     function test_SEC_deposit_forAnotherUser() public {
-        // Eve deposits for alice — this is allowed by design
         vm.prank(eve);
-        engine.depositCollateral(alice, 100 * WAD);
-
-        assertEq(engine.getPositionCollateralShares(alice), 100 * WAD);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        assertEq(engine.getPositionCollateralShares(alice, MARKET_ID), 100 * WAD);
     }
 
     // =====================================================================
@@ -1018,93 +848,84 @@ contract SecurityTest is Test {
     //  17. CONTROLLABLE VAULT: HARVEST YIELD ATTACK
     // =====================================================================
 
-    /// @notice Vault share price manipulation during harvest
     function test_SEC_harvest_vaultPriceManipulation() public {
         ControllableVault cVault = new ControllableVault(address(assetToken));
         ControllableOracle cOracle = new ControllableOracle(WAD);
 
+        AuraMarketRegistry cRegistry = new AuraMarketRegistry(address(this));
+        cRegistry.addMarket(
+            address(cVault), address(cOracle),
+            uint16(8000), uint16(8500), uint16(500),
+            0, 0, false, 0
+        );
         AuraEngine cImpl = new AuraEngine();
         AuraProxy cProxy = new AuraProxy(
             address(cImpl),
             abi.encodeCall(
                 AuraEngine.initialize,
-                (address(cVault), address(debtToken), address(cOracle), 8000, 8500, 500, 1 days, 2 days)
+                (address(debtToken), address(cRegistry), uint256(1 days), uint256(2 days))
             )
         );
         AuraEngine cEngine = AuraEngine(address(cProxy));
+        cRegistry.setEngine(address(cProxy));
         debtToken.mint(address(cProxy), 10_000_000 * WAD);
 
-        // Alice deposits
         assetToken.mint(alice, 1000 * WAD);
         vm.startPrank(alice);
         assetToken.approve(address(cVault), type(uint256).max);
         cVault.deposit(1000 * WAD, alice);
         cVault.approve(address(cProxy), type(uint256).max);
-        cEngine.depositCollateral(alice, 1000 * WAD);
+        cEngine.depositCollateral(alice, MARKET_ID, 1000 * WAD);
         vm.stopPrank();
 
         vm.roll(10);
         vm.prank(alice);
-        cEngine.borrow(alice, 500 * WAD);
+        cEngine.borrow(alice, MARKET_ID, 500 * WAD);
 
-        // Attacker inflates vault share price before harvest
-        cVault.setPricePerShare(2 * WAD); // 2x price = 100% yield
-
+        cVault.setPricePerShare(2 * WAD);
         vm.warp(block.timestamp + 2 days);
-        uint256 yieldApplied = cEngine.harvestYield();
-
-        // Yield should be capped at total debt (500 WAD)
+        uint256 yieldApplied = cEngine.harvestYield(MARKET_ID);
         assertTrue(yieldApplied <= 500 * WAD);
-
-        // Debt should be reduced
-        assertTrue(cEngine.getPositionDebt(alice) < 500 * WAD);
+        assertTrue(cEngine.getPositionDebt(alice, MARKET_ID) < 500 * WAD);
     }
 
     // =====================================================================
     //  18. POSITION WITH NO PRIOR INTERACTION
     // =====================================================================
 
-    /// @notice User with no position cannot borrow
     function test_SEC_edge_noPriorDepositCannotBorrow() public {
         address nobody = address(0xDEAD);
         vm.prank(nobody);
         vm.expectRevert(AuraEngine.Aura__ExceedsLTV.selector);
-        engine.borrow(nobody, 1 * WAD);
+        engine.borrow(nobody, MARKET_ID, 1 * WAD);
     }
 
-    /// @notice User with no position cannot withdraw
     function test_SEC_edge_noPriorDepositCannotWithdraw() public {
         address nobody = address(0xDEAD);
         vm.prank(nobody);
         vm.expectRevert(AuraEngine.Aura__InsufficientCollateral.selector);
-        engine.withdrawCollateral(nobody, 1 * WAD);
+        engine.withdrawCollateral(nobody, MARKET_ID, 1 * WAD);
     }
 
     // =====================================================================
     //  19. LARGE VALUE STRESS TEST
     // =====================================================================
 
-    /// @notice Large deposits and borrows don't overflow
     function test_SEC_stress_largeValues() public {
-        uint256 largeAmount = 1_000_000_000 * WAD; // 1 billion
-
+        uint256 largeAmount = 1_000_000_000 * WAD;
         assetToken.mint(alice, largeAmount);
         vm.startPrank(alice);
         assetToken.approve(address(vault), type(uint256).max);
         vault.deposit(largeAmount, alice);
         vault.approve(address(proxy), type(uint256).max);
-
-        engine.depositCollateral(alice, largeAmount);
+        engine.depositCollateral(alice, MARKET_ID, largeAmount);
         vm.stopPrank();
-
         vm.roll(10);
-        uint256 maxBorrow = (largeAmount * 8000) / 10000; // 80% LTV
+        uint256 maxBorrow = (largeAmount * 8000) / 10000;
         debtToken.mint(address(proxy), maxBorrow);
-
         vm.prank(alice);
-        engine.borrow(alice, maxBorrow);
-
-        assertEq(engine.getPositionDebt(alice), maxBorrow);
+        engine.borrow(alice, MARKET_ID, maxBorrow);
+        assertEq(engine.getPositionDebt(alice, MARKET_ID), maxBorrow);
         assertTrue(engine.getHealthFactor(alice) > WAD);
     }
 
@@ -1112,25 +933,17 @@ contract SecurityTest is Test {
     //  20. DUST POSITION ATTACK
     // =====================================================================
 
-    /// @notice Tiny dust position should still be liquidatable when unhealthy
     function test_SEC_dust_tinyPositionLiquidatable() public {
         vm.prank(alice);
-        engine.depositCollateral(alice, 10); // 10 wei of shares
+        engine.depositCollateral(alice, MARKET_ID, 10);
         vm.roll(10);
-
-        // With 1:1 price, collateral = 10 wei, max borrow = 8 wei (80%)
         vm.prank(alice);
-        engine.borrow(alice, 8);
-
-        // Price crashes
+        engine.borrow(alice, MARKET_ID, 8);
         vm.roll(20);
         oracle.setPrice(WAD / 2);
-
-        // Should be liquidatable
         uint256 hf = engine.getHealthFactor(alice);
         assertTrue(hf < WAD);
-
         vm.prank(eve);
-        engine.liquidate(alice, 8);
+        engine.liquidate(alice, MARKET_ID, 8);
     }
 }

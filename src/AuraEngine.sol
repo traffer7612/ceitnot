@@ -1,28 +1,28 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import { AuraStorage } from "./AuraStorage.sol";
-import { FixedPoint } from "./FixedPoint.sol";
-import { IERC4626 } from "./interfaces/IERC4626.sol";
-import { IOracleRelay } from "./interfaces/IOracleRelay.sol";
+import { AuraStorage }     from "./AuraStorage.sol";
+import { FixedPoint }      from "./FixedPoint.sol";
+import { IERC4626 }        from "./interfaces/IERC4626.sol";
+import { IOracleRelay }    from "./interfaces/IOracleRelay.sol";
+import { IMarketRegistry } from "./interfaces/IMarketRegistry.sol";
 
 /**
  * @title AuraEngine
  * @author Sanzhik(traffer7612)
  * @notice Autonomous Yield-Backed Credit Engine: deposit ERC-4626 yield-bearing collateral,
  *         borrow stablecoin; yield is programmatically applied to principal (Yield Siphon).
- * @dev Uses EIP-7201 namespaced storage; UUPS upgradeable; stream-settlement via globalDebtScale.
+ * @dev Phase 2: multi-market. Uses EIP-7201 namespaced storage; UUPS upgradeable.
+ *      Each market has its own collateral vault, oracle, and risk params (held in AuraMarketRegistry).
+ *      Debt is a single token across all markets; health factor is aggregated cross-collateral.
  */
 contract AuraEngine {
-    // ------------------------------- Custom errors (gas-efficient)
+    // ------------------------------- Custom errors
     error Aura__Paused();
     error Aura__EmergencyShutdown();
-    error Aura__InvalidVault();
-    error Aura__InvalidOracle();
     error Aura__ZeroAmount();
     error Aura__InsufficientCollateral();
     error Aura__ExceedsLTV();
-    error Aura__ExceedsLiquidationThreshold();
     error Aura__HealthFactorBelowOne();
     error Aura__HealthFactorAboveOne();
     error Aura__SameBlockInteraction();
@@ -34,14 +34,23 @@ contract AuraEngine {
     error Aura__Reentrancy();
     error Aura__AlreadyInitialized();
     error Aura__NotContract();
+    error Aura__MarketNotFound();
+    error Aura__MarketFrozen();
+    error Aura__MarketInactive();
+    error Aura__SupplyCapExceeded();
+    error Aura__BorrowCapExceeded();
+    error Aura__IsolationViolation();
 
-    event CollateralDeposited(address indexed user, uint256 shares);
-    event CollateralWithdrawn(address indexed user, uint256 shares);
-    event Borrowed(address indexed user, uint256 amount);
-    event Repaid(address indexed user, uint256 amount);
-    event YieldHarvested(uint256 yieldUnderlying, uint256 yieldAppliedToDebt, uint256 newScale);
-    event Liquidated(address indexed user, address indexed liquidator, uint256 repayAmount, uint256 collateralSeized);
-    event ParamsUpdated(string param, uint256 value);
+    // ------------------------------- Events
+    event CollateralDeposited(address indexed user, uint256 indexed marketId, uint256 shares);
+    event CollateralWithdrawn(address indexed user, uint256 indexed marketId, uint256 shares);
+    event Borrowed(address indexed user, uint256 indexed marketId, uint256 amount);
+    event Repaid(address indexed user, uint256 indexed marketId, uint256 amount);
+    event YieldHarvested(uint256 indexed marketId, uint256 yieldUnderlying, uint256 yieldAppliedToDebt, uint256 newScale);
+    event Liquidated(address indexed user, address indexed liquidator, uint256 indexed marketId, uint256 repayAmount, uint256 collateralSeized);
+    event EngineParamUpdated(string param, uint256 value);
+    event MarketParamProposed(uint256 indexed marketId, bytes32 paramId, uint256 value);
+    event MarketParamExecuted(uint256 indexed marketId, bytes32 paramId, uint256 value);
     event EmergencyShutdownSet(bool status);
     event PausedSet(bool status);
     event AdminTransferred(address indexed previousAdmin, address indexed newAdmin);
@@ -52,163 +61,182 @@ contract AuraEngine {
     /// @notice EIP-1967 UUPS upgrade interface version
     string public constant UPGRADE_INTERFACE_VERSION = "5.0.0";
 
+    /// @dev EIP-1967 implementation slot
+    bytes32 private constant IMPLEMENTATION_SLOT =
+        0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    // ------------------------------- Constructor
     /// @dev Locks the implementation contract from being initialized directly.
     constructor() {
         AuraStorage.getStorage().initializationVersion = type(uint256).max;
     }
 
-    /// @notice Initializer (replaces constructor for proxy). Call from proxy.
-    /// @param collateralVault_ ERC-4626 vault address (e.g. stETH wrapper)
-    /// @param debtToken_ Stablecoin or debt token address
-    /// @param oracleRelay_ Oracle for collateral price (in debt token units, 1e18)
-    /// @param ltvBps_ Max LTV in basis points (e.g. 8000 = 80%)
-    /// @param liquidationThresholdBps_ Liquidation threshold in bps
-    /// @param liquidationPenaltyBps_ Liquidation penalty in bps
-    /// @param heartbeat_ Min seconds between harvests
-    /// @param timelockDelay_ Delay for critical param changes (seconds)
+    // ------------------------------- Initializer
+    /// @notice Initializer (replaces constructor for proxy). Call once from proxy.
+    /// @param debtToken_       Single stablecoin / debt token used across all markets
+    /// @param marketRegistry_  AuraMarketRegistry address
+    /// @param heartbeat_       Min seconds between harvests (engine-wide default)
+    /// @param timelockDelay_   Delay for critical param changes (seconds)
     function initialize(
-        address collateralVault_,
         address debtToken_,
-        address oracleRelay_,
-        uint16 ltvBps_,
-        uint16 liquidationThresholdBps_,
-        uint16 liquidationPenaltyBps_,
+        address marketRegistry_,
         uint256 heartbeat_,
         uint256 timelockDelay_
     ) external {
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
-        if ($.initializationVersion != 0 || $.collateralVault != address(0)) revert Aura__AlreadyInitialized();
-        if (collateralVault_ == address(0) || debtToken_ == address(0) || oracleRelay_ == address(0)) revert Aura__InvalidParams();
-        if (liquidationThresholdBps_ < ltvBps_ || ltvBps_ > 10_000) revert Aura__InvalidParams();
+        if ($.initializationVersion != 0) revert Aura__AlreadyInitialized();
+        if (debtToken_ == address(0) || marketRegistry_ == address(0)) revert Aura__InvalidParams();
 
-        $.collateralVault = collateralVault_;
-        $.debtToken = debtToken_;
-        $.oracleRelay = oracleRelay_;
-        $.ltvBps = ltvBps_;
-        $.liquidationThresholdBps = liquidationThresholdBps_;
-        $.liquidationPenaltyBps = liquidationPenaltyBps_;
-        $.heartbeat = heartbeat_;
+        $.debtToken           = debtToken_;
+        $.marketRegistry      = marketRegistry_;
+        $.heartbeat           = heartbeat_;
         $.constantTimelockDelay = timelockDelay_;
-        $.globalDebtScale = AuraStorage.RAY;
-        try IERC4626(collateralVault_).convertToAssets(AuraStorage.WAD) returns (uint256 p) {
-            $.lastHarvestPricePerShare = p;
-        } catch {
-            $.lastHarvestPricePerShare = AuraStorage.WAD;
-        }
-        $.lastHarvestTimestamp = block.timestamp;
-        $.admin = msg.sender;
+        $.admin               = msg.sender;
         $.initializationVersion = 1;
-        $.reentrancyStatus = 1;
+        $.reentrancyStatus    = 1;
     }
 
     // ------------------------------- UUPS
-    /// @dev EIP-1967 implementation slot (literal for assembly)
-    bytes32 private constant IMPLEMENTATION_SLOT =
-        0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
-
     /// @notice Upgrade proxy to new implementation. Only admin.
-    /// @param newImplementation Address of the new implementation contract
-    /// @param data Optional data to call on the new implementation (e.g. reinit)
     function upgradeToAndCall(address newImplementation, bytes memory data) external payable {
         if (AuraStorage.getStorage().admin != msg.sender) revert Aura__Unauthorized();
         if (newImplementation == address(0)) revert Aura__InvalidParams();
         if (newImplementation.code.length == 0) revert Aura__NotContract();
-        assembly {
-            sstore(IMPLEMENTATION_SLOT, newImplementation)
-        }
+        assembly { sstore(IMPLEMENTATION_SLOT, newImplementation) }
         if (data.length > 0) {
             (bool ok, ) = newImplementation.delegatecall(data);
             if (!ok) revert Aura__InvalidParams();
         }
     }
 
-    // ------------------------------- Governance: circuit breaker & params
-    modifier onlyAdmin() {
-        _onlyAdmin();
-        _;
-    }
-
+    // ------------------------------- Access modifiers
+    modifier onlyAdmin() { _onlyAdmin(); _; }
     function _onlyAdmin() internal view {
         if (AuraStorage.getStorage().admin != msg.sender) revert Aura__Unauthorized();
     }
 
-    modifier onlyAdminOrGuardian() {
-        _onlyAdminOrGuardian();
-        _;
-    }
-
+    modifier onlyAdminOrGuardian() { _onlyAdminOrGuardian(); _; }
     function _onlyAdminOrGuardian() internal view {
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
         if ($.admin != msg.sender && !$.guardians[msg.sender]) revert Aura__Unauthorized();
     }
 
-    /// @notice Pause deposits, borrows, withdrawals, repayments, harvests, liquidations
+    modifier whenNotPaused()   { if (AuraStorage.getStorage().paused)             revert Aura__Paused();             _; }
+    modifier whenNotShutdown() { if (AuraStorage.getStorage().emergencyShutdown)  revert Aura__EmergencyShutdown(); _; }
+
+    modifier nonReentrant() {
+        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
+        if ($.reentrancyStatus == 2) revert Aura__Reentrancy();
+        $.reentrancyStatus = 2;
+        _;
+        $.reentrancyStatus = 1;
+    }
+
+    /// @dev Per-user per-market same-block protection.
+    modifier noSameBlock(address user, uint256 marketId) {
+        AuraStorage.MarketPosition storage pos = AuraStorage.getStorage().positions[user][marketId];
+        if (pos.lastInteractionBlock == block.number) revert Aura__SameBlockInteraction();
+        pos.lastInteractionBlock = block.number;
+        _;
+    }
+
+    // ------------------------------- Governance
     function setPaused(bool paused_) external onlyAdminOrGuardian {
         AuraStorage.getStorage().paused = paused_;
         emit PausedSet(paused_);
     }
 
-    /// @notice Emergency shutdown: disable new borrows and deposits; allow repay + withdraw
     function setEmergencyShutdown(bool shutdown_) external onlyAdminOrGuardian {
         AuraStorage.getStorage().emergencyShutdown = shutdown_;
         emit EmergencyShutdownSet(shutdown_);
     }
 
-    /// @notice Set minimum yield (in debt token) to apply in one harvest (avoids dust updates)
     function setMinHarvestYieldDebt(uint256 value) external onlyAdmin {
         AuraStorage.getStorage().minHarvestYieldDebt = value;
-        emit ParamsUpdated("minHarvestYieldDebt", value);
+        emit EngineParamUpdated("minHarvestYieldDebt", value);
     }
 
-    /// @notice Set heartbeat (min seconds between harvests)
     function setHeartbeat(uint256 value) external onlyAdmin {
         AuraStorage.getStorage().heartbeat = value;
-        emit ParamsUpdated("heartbeat", value);
+        emit EngineParamUpdated("heartbeat", value);
     }
 
-    /// @notice Propose a timelocked parameter change. Apply with executeParam after delay.
-    /// @param paramId keccak256("ltvBps"), keccak256("liquidationThresholdBps"), etc.
-    /// @param value New value to apply
+    /// @notice Propose engine-level timelocked param (heartbeat, minHarvestYieldDebt).
     function proposeParam(bytes32 paramId, uint256 value) external onlyAdmin {
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
-        $.timelockDeadline[paramId] = block.timestamp + $.constantTimelockDelay;
-        $.pendingParamValue[paramId] = value;
+        $.timelockDeadline[paramId]   = block.timestamp + $.constantTimelockDelay;
+        $.pendingParamValue[paramId]  = value;
     }
 
-    /// @notice Execute a proposed parameter change after timelock has elapsed
+    /// @notice Execute engine-level timelocked param after delay.
     function executeParam(bytes32 paramId) external onlyAdmin {
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
         if (block.timestamp < $.timelockDeadline[paramId]) revert Aura__TimelockNotElapsed();
         uint256 value = $.pendingParamValue[paramId];
         delete $.timelockDeadline[paramId];
         delete $.pendingParamValue[paramId];
-        if (paramId == keccak256("ltvBps")) {
-            if (value > 10_000 || value > $.liquidationThresholdBps) revert Aura__InvalidParams();
-            // forge-lint: disable-next-line(unsafe-typecast)
-            $.ltvBps = uint16(value);
-            emit ParamsUpdated("ltvBps", value);
-        } else if (paramId == keccak256("liquidationThresholdBps")) {
-            if (value < $.ltvBps || value > 10_000) revert Aura__InvalidParams();
-            // forge-lint: disable-next-line(unsafe-typecast)
-            $.liquidationThresholdBps = uint16(value);
-            emit ParamsUpdated("liquidationThresholdBps", value);
-        } else if (paramId == keccak256("liquidationPenaltyBps")) {
-            // forge-lint: disable-next-line(unsafe-typecast)
-            $.liquidationPenaltyBps = uint16(value);
-            emit ParamsUpdated("liquidationPenaltyBps", value);
+        if (paramId == keccak256("heartbeat")) {
+            $.heartbeat = value;
+            emit EngineParamUpdated("heartbeat", value);
+        } else if (paramId == keccak256("minHarvestYieldDebt")) {
+            $.minHarvestYieldDebt = value;
+            emit EngineParamUpdated("minHarvestYieldDebt", value);
         } else {
             revert Aura__InvalidParams();
         }
     }
 
-    /// @notice Propose a new admin. Must be accepted by the new admin via acceptAdmin().
+    /// @notice Propose a per-market risk param change (ltvBps, liquidationThresholdBps, liquidationPenaltyBps).
+    /// @param marketId  Target market
+    /// @param paramId   keccak256("ltvBps") | keccak256("liquidationThresholdBps") | keccak256("liquidationPenaltyBps")
+    /// @param value     New value
+    function proposeMarketParam(uint256 marketId, bytes32 paramId, uint256 value) external onlyAdmin {
+        if (!IMarketRegistry(AuraStorage.getStorage().marketRegistry).marketExists(marketId))
+            revert Aura__MarketNotFound();
+        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
+        bytes32 key = keccak256(abi.encode(marketId, paramId));
+        $.timelockDeadline[key]             = block.timestamp + $.constantTimelockDelay;
+        $.pendingMarketParamValue[key]       = value;
+        emit MarketParamProposed(marketId, paramId, value);
+    }
+
+    /// @notice Execute a per-market risk param change after timelock has elapsed.
+    function executeMarketParam(uint256 marketId, bytes32 paramId) external onlyAdmin {
+        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
+        bytes32 key = keccak256(abi.encode(marketId, paramId));
+        if (block.timestamp < $.timelockDeadline[key]) revert Aura__TimelockNotElapsed();
+        uint256 value = $.pendingMarketParamValue[key];
+        delete $.timelockDeadline[key];
+        delete $.pendingMarketParamValue[key];
+
+        IMarketRegistry reg = IMarketRegistry($.marketRegistry);
+        IMarketRegistry.MarketConfig memory cfg = reg.getMarket(marketId);
+
+        uint16 newLtv   = cfg.ltvBps;
+        uint16 newLt    = cfg.liquidationThresholdBps;
+        uint16 newPen   = cfg.liquidationPenaltyBps;
+
+        if (paramId == keccak256("ltvBps")) {
+            if (value > 10_000 || value > cfg.liquidationThresholdBps) revert Aura__InvalidParams();
+            newLtv = uint16(value);
+        } else if (paramId == keccak256("liquidationThresholdBps")) {
+            if (value < cfg.ltvBps || value > 10_000) revert Aura__InvalidParams();
+            newLt = uint16(value);
+        } else if (paramId == keccak256("liquidationPenaltyBps")) {
+            newPen = uint16(value);
+        } else {
+            revert Aura__InvalidParams();
+        }
+        reg.updateMarketRiskParams(marketId, newLtv, newLt, newPen);
+        emit MarketParamExecuted(marketId, paramId, value);
+    }
+
     function proposeAdmin(address newAdmin) external onlyAdmin {
         if (newAdmin == address(0)) revert Aura__InvalidParams();
         AuraStorage.getStorage().pendingAdmin = newAdmin;
         emit AdminProposed(msg.sender, newAdmin);
     }
 
-    /// @notice Accept admin role. Must be called by the pending admin.
     function acceptAdmin() external {
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
         if (msg.sender != $.pendingAdmin) revert Aura__Unauthorized();
@@ -218,328 +246,495 @@ contract AuraEngine {
         emit AdminTransferred(oldAdmin, msg.sender);
     }
 
-    /// @notice Set guardian role (can pause/emergency shutdown)
     function setGuardian(address guardian, bool status) external onlyAdmin {
         AuraStorage.getStorage().guardians[guardian] = status;
         emit GuardianSet(guardian, status);
     }
 
-    /// @notice Set keeper role (for automated harvest)
     function setKeeper(address keeper, bool status) external onlyAdmin {
         AuraStorage.getStorage().keepers[keeper] = status;
         emit KeeperSet(keeper, status);
     }
 
-    // ------------------------------- Modifiers (access & circuit breaker)
-    modifier whenNotPaused() {
-        _whenNotPaused();
-        _;
-    }
-
-    function _whenNotPaused() internal view {
-        if (AuraStorage.getStorage().paused) revert Aura__Paused();
-    }
-
-    modifier whenNotShutdown() {
-        _whenNotShutdown();
-        _;
-    }
-
-    function _whenNotShutdown() internal view {
-        if (AuraStorage.getStorage().emergencyShutdown) revert Aura__EmergencyShutdown();
-    }
-
-    modifier noSameBlock(address user) {
-        _noSameBlock(user);
-        _;
-    }
-
-    function _noSameBlock(address user) internal {
-        AuraStorage.Position storage pos = AuraStorage.getStorage().positions[user];
-        if (pos.lastInteractionBlock == block.number) revert Aura__SameBlockInteraction();
-        pos.lastInteractionBlock = block.number;
-    }
-
-    /// @dev Reentrancy guard. Prevents nested calls into state-changing functions.
-    modifier nonReentrant() {
-        _nonReentrantBefore();
-        _;
-        _nonReentrantAfter();
-    }
-
-    function _nonReentrantBefore() internal {
-        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
-        if ($.reentrancyStatus == 2) revert Aura__Reentrancy();
-        $.reentrancyStatus = 2;
-    }
-
-    function _nonReentrantAfter() internal {
-        AuraStorage.getStorage().reentrancyStatus = 1;
-    }
-
-    // ------------------------------- Core:
-    /// @notice Deposit ERC-4626 vault shares as collateral. Caller must approve engine.
-    /// @param user Beneficiary of the collateral position (can be msg.sender or another address)
-    /// @param shares Amount of vault shares to deposit (WAD)
-    function depositCollateral(address user, uint256 shares) external whenNotPaused whenNotShutdown noSameBlock(user) nonReentrant {
+    // ------------------------------- Core: Deposit / Withdraw
+    /**
+     * @notice Deposit ERC-4626 vault shares as collateral into a specific market.
+     * @param user     Beneficiary of the position
+     * @param marketId Target market (must be active and not frozen)
+     * @param shares   Amount of vault shares to deposit
+     */
+    function depositCollateral(
+        address user,
+        uint256 marketId,
+        uint256 shares
+    ) external whenNotPaused whenNotShutdown noSameBlock(user, marketId) nonReentrant {
         if (shares == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
-        IERC4626 vault = IERC4626($.collateralVault);
-        bool ok = vault.transferFrom(msg.sender, address(this), shares);
+        IMarketRegistry.MarketConfig memory cfg = _requireActiveMarket($.marketRegistry, marketId);
+
+        // Supply cap check
+        AuraStorage.MarketState storage ms = $.marketStates[marketId];
+        if (cfg.supplyCap != 0 && ms.totalCollateralShares + shares > cfg.supplyCap)
+            revert Aura__SupplyCapExceeded();
+
+        // Isolation mode check
+        _checkIsolationOnDeposit($, user, marketId, cfg.isIsolated);
+
+        // Pull shares from caller
+        bool ok = IERC4626(cfg.vault).transferFrom(msg.sender, address(this), shares);
         if (!ok) revert Aura__InvalidParams();
 
-        AuraStorage.Position storage pos = $.positions[user];
+        // Update state
+        AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
+        if (!$.userInMarket[user][marketId]) {
+            $.userInMarket[user][marketId] = true;
+            $.userMarketIds[user].push(marketId);
+        }
         pos.collateralShares += shares;
-        $.totalCollateralShares += shares;
-        emit CollateralDeposited(user, shares);
+        ms.totalCollateralShares += shares;
+
+        // Initialise per-market state on first deposit
+        if (ms.globalDebtScale == 0) {
+            ms.globalDebtScale = AuraStorage.RAY;
+            try IERC4626(cfg.vault).convertToAssets(AuraStorage.WAD) returns (uint256 p) {
+                ms.lastHarvestPricePerShare = p;
+            } catch {
+                ms.lastHarvestPricePerShare = AuraStorage.WAD;
+            }
+            ms.lastHarvestTimestamp = block.timestamp;
+        }
+
+        emit CollateralDeposited(user, marketId, shares);
     }
 
-    /// @notice Withdraw collateral. Reverts if health factor would go below 1. Caller must be position owner.
-    /// @param user Owner of the position (must equal msg.sender)
-    /// @param shares Amount of vault shares to withdraw (WAD)
-    function withdrawCollateral(address user, uint256 shares) external whenNotPaused noSameBlock(user) nonReentrant {
+    /**
+     * @notice Withdraw collateral shares from a market. Reverts if cross-collateral HF < 1.
+     * @param user     Position owner (must equal msg.sender)
+     * @param marketId Source market
+     * @param shares   Amount of shares to withdraw
+     */
+    function withdrawCollateral(
+        address user,
+        uint256 marketId,
+        uint256 shares
+    ) external whenNotPaused noSameBlock(user, marketId) nonReentrant {
         if (msg.sender != user) revert Aura__Unauthorized();
         if (shares == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
-        AuraStorage.Position storage pos = $.positions[user];
+        IMarketRegistry.MarketConfig memory cfg = _getMarketCfg($.marketRegistry, marketId);
+
+        AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
         if (pos.collateralShares < shares) revert Aura__InsufficientCollateral();
 
-        _settlePosition($, user);
+        _settlePosition($, user, marketId);
         pos.collateralShares -= shares;
-        $.totalCollateralShares -= shares;
-        _requireHealthy(user);
-        bool ok = IERC4626($.collateralVault).transfer(msg.sender, shares);
+        $.marketStates[marketId].totalCollateralShares -= shares;
+
+        // Clean up market tracking if position fully closed
+        _tryExitMarket($, user, marketId);
+
+        _requireHealthy($, user);
+
+        bool ok = IERC4626(cfg.vault).transfer(msg.sender, shares);
         if (!ok) revert Aura__InvalidParams();
-        emit CollateralWithdrawn(user, shares);
+        emit CollateralWithdrawn(user, marketId, shares);
     }
 
-    // ------------------------------- Borrow / Repay
-    /// @notice Borrow debt token. Increases position debt; must remain within LTV. Caller must be position owner.
-    /// @param user Owner of the position (must equal msg.sender; receives borrowed tokens)
-    /// @param amount Amount of debt token to borrow (token decimals)
-    function borrow(address user, uint256 amount) external whenNotPaused whenNotShutdown noSameBlock(user) nonReentrant {
+    // ------------------------------- Core: Borrow / Repay
+    /**
+     * @notice Borrow debt token against collateral in a specific market.
+     * @param user     Position owner (must equal msg.sender)
+     * @param marketId Source market (determines per-market LTV check)
+     * @param amount   Amount of debt token to borrow
+     */
+    function borrow(
+        address user,
+        uint256 marketId,
+        uint256 amount
+    ) external whenNotPaused whenNotShutdown noSameBlock(user, marketId) nonReentrant {
         if (msg.sender != user) revert Aura__Unauthorized();
         if (amount == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
-        _settlePosition($, user);
-        AuraStorage.Position storage pos = $.positions[user];
-        uint256 newPrincipal = pos.principalDebt + amount;
-        pos.principalDebt = newPrincipal;
-        pos.scaleAtLastUpdate = $.globalDebtScale;
-        $.totalPrincipalDebt += amount;
-        _requireLtv(user);
+        IMarketRegistry.MarketConfig memory cfg = _requireActiveMarket($.marketRegistry, marketId);
+
+        _settlePosition($, user, marketId);
+
+        AuraStorage.MarketState   storage ms  = $.marketStates[marketId];
+        AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
+
+        // Borrow cap check
+        if (cfg.borrowCap != 0 && ms.totalPrincipalDebt + amount > cfg.borrowCap)
+            revert Aura__BorrowCapExceeded();
+
+        // Isolation borrow cap
+        if (cfg.isIsolated && cfg.isolatedBorrowCap != 0) {
+            uint256 currentIsolatedDebt = (ms.totalPrincipalDebt * ms.globalDebtScale) / AuraStorage.RAY;
+            if (currentIsolatedDebt + amount > cfg.isolatedBorrowCap)
+                revert Aura__BorrowCapExceeded();
+        }
+
+        pos.principalDebt    += amount;
+        pos.scaleAtLastUpdate = ms.globalDebtScale == 0 ? AuraStorage.RAY : ms.globalDebtScale;
+        ms.totalPrincipalDebt += amount;
+
+        _requireLtv($, user, marketId, cfg);
         _transferOut($.debtToken, user, amount);
-        emit Borrowed(user, amount);
+        emit Borrowed(user, marketId, amount);
     }
 
-    /// @notice Repay debt. Reduces position debt. Caller must be position owner (and pays from their balance).
-    /// @param user Position owner (must equal msg.sender)
-    /// @param amount Amount of debt token to repay
-    function repay(address user, uint256 amount) external whenNotPaused noSameBlock(user) nonReentrant {
+    /**
+     * @notice Repay debt in a specific market.
+     * @param user     Position owner (must equal msg.sender)
+     * @param marketId Target market
+     * @param amount   Amount of debt token to repay
+     */
+    function repay(
+        address user,
+        uint256 marketId,
+        uint256 amount
+    ) external whenNotPaused noSameBlock(user, marketId) nonReentrant {
         if (msg.sender != user) revert Aura__Unauthorized();
         if (amount == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
-        _settlePosition($, user);
-        AuraStorage.Position storage pos = $.positions[user];
+        _getMarketCfg($.marketRegistry, marketId); // ensures market exists
+
+        _settlePosition($, user, marketId);
+        AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
         uint256 debt = pos.principalDebt;
         if (amount > debt) amount = debt;
         unchecked {
-            pos.principalDebt = debt - amount;
-            $.totalPrincipalDebt -= amount;
+            pos.principalDebt                        -= amount;
+            $.marketStates[marketId].totalPrincipalDebt -= amount;
         }
+        _tryExitMarket($, user, marketId);
         _transferIn($.debtToken, msg.sender, amount);
-        emit Repaid(user, amount);
+        emit Repaid(user, marketId, amount);
     }
 
-    // ------------------------------- Yield Siphon (Heartbeat)
-    /// @notice Harvest yield from collateral and apply to global debt scale (O(1)).
-    ///         Yield = increase in collateral value (from vault share price increase) since last harvest.
-    /// @return yieldApplied Amount of debt effectively repaid by yield (WAD)
-    function harvestYield() external whenNotPaused whenNotShutdown nonReentrant returns (uint256 yieldApplied) {
+    // ------------------------------- Yield Siphon
+    /**
+     * @notice Harvest yield accrued by a market's collateral vault and apply it to reduce debt (O(1)).
+     * @param marketId Target market
+     * @return yieldApplied Amount of debt effectively reduced by yield
+     */
+    function harvestYield(
+        uint256 marketId
+    ) external whenNotPaused whenNotShutdown nonReentrant returns (uint256 yieldApplied) {
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
-        if (block.timestamp < $.lastHarvestTimestamp + $.heartbeat) revert Aura__HeartbeatNotElapsed();
-        uint256 totalShares = $.totalCollateralShares;
-        if (totalShares == 0) {
-            $.lastHarvestPricePerShare = _currentPricePerShare();
-            $.lastHarvestTimestamp = block.timestamp;
+        IMarketRegistry.MarketConfig memory cfg = _getMarketCfg($.marketRegistry, marketId);
+        AuraStorage.MarketState storage ms = $.marketStates[marketId];
+
+        if (ms.globalDebtScale == 0) revert Aura__MarketNotFound(); // market never had a deposit
+        if (block.timestamp < ms.lastHarvestTimestamp + $.heartbeat) revert Aura__HeartbeatNotElapsed();
+
+        uint256 totalShares = ms.totalCollateralShares;
+        uint256 currentPrice = IERC4626(cfg.vault).convertToAssets(AuraStorage.WAD);
+
+        if (totalShares == 0 || currentPrice <= ms.lastHarvestPricePerShare) {
+            ms.lastHarvestPricePerShare = currentPrice;
+            ms.lastHarvestTimestamp     = block.timestamp;
             return 0;
         }
-        uint256 currentPrice = _currentPricePerShare();
-        if (currentPrice <= $.lastHarvestPricePerShare) {
-            $.lastHarvestPricePerShare = currentPrice;
-            $.lastHarvestTimestamp = block.timestamp;
-            return 0;
-        }
+
         uint256 yieldUnderlying;
         unchecked {
-            yieldUnderlying = (totalShares * (currentPrice - $.lastHarvestPricePerShare)) / AuraStorage.WAD;
+            yieldUnderlying = (totalShares * (currentPrice - ms.lastHarvestPricePerShare)) / AuraStorage.WAD;
         }
-        (uint256 price, ) = IOracleRelay($.oracleRelay).getLatestPrice();
+
+        (uint256 price, ) = IOracleRelay(cfg.oracle).getLatestPrice();
         if (price == 0) {
-            $.lastHarvestPricePerShare = currentPrice;
-            $.lastHarvestTimestamp = block.timestamp;
+            ms.lastHarvestPricePerShare = currentPrice;
+            ms.lastHarvestTimestamp     = block.timestamp;
             return 0;
         }
+
         uint256 yieldDebt = (yieldUnderlying * price) / AuraStorage.WAD;
         if ($.minHarvestYieldDebt != 0 && yieldDebt < $.minHarvestYieldDebt) revert Aura__HarvestTooSmall();
-        uint256 totalDebtNow = ($.totalPrincipalDebt * $.globalDebtScale) / AuraStorage.RAY;
+
+        uint256 totalDebtNow = (ms.totalPrincipalDebt * ms.globalDebtScale) / AuraStorage.RAY;
         if (totalDebtNow == 0) {
-            $.lastHarvestPricePerShare = currentPrice;
-            $.lastHarvestTimestamp = block.timestamp;
+            ms.lastHarvestPricePerShare = currentPrice;
+            ms.lastHarvestTimestamp     = block.timestamp;
             return 0;
         }
         if (yieldDebt > totalDebtNow) yieldDebt = totalDebtNow;
-        $.globalDebtScale = FixedPoint.scaleAfterYield($.globalDebtScale, totalDebtNow, yieldDebt);
-        $.lastHarvestPricePerShare = currentPrice;
-        $.lastHarvestTimestamp = block.timestamp;
-        emit YieldHarvested(yieldUnderlying, yieldDebt, $.globalDebtScale);
+
+        ms.globalDebtScale          = FixedPoint.scaleAfterYield(ms.globalDebtScale, totalDebtNow, yieldDebt);
+        ms.lastHarvestPricePerShare  = currentPrice;
+        ms.lastHarvestTimestamp      = block.timestamp;
+
+        emit YieldHarvested(marketId, yieldUnderlying, yieldDebt, ms.globalDebtScale);
         return yieldDebt;
     }
 
     // ------------------------------- Liquidation
-    /// @notice Liquidate an unhealthy position: repay debt on behalf of user, receive collateral (with penalty).
-    /// @param user Unhealthy position owner
-    /// @param repayAmount Amount of debt to repay
-    function liquidate(address user, uint256 repayAmount) external whenNotPaused whenNotShutdown noSameBlock(user) nonReentrant {
+    /**
+     * @notice Liquidate an unhealthy position in a specific market.
+     *         Repay debt on behalf of user; receive their collateral with a bonus.
+     * @param user        Unhealthy position owner
+     * @param marketId    Market to liquidate in
+     * @param repayAmount Amount of debt to repay
+     */
+    function liquidate(
+        address user,
+        uint256 marketId,
+        uint256 repayAmount
+    ) external whenNotPaused whenNotShutdown noSameBlock(user, marketId) nonReentrant {
         if (repayAmount == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
-        _settlePosition($, user);
-        uint256 hf = _healthFactorRaw($, user);
-        if (hf >= AuraStorage.WAD) revert Aura__HealthFactorAboveOne(); // only liquidate when unhealthy
-        uint256 debt = _currentDebtRaw($, user);
+        IMarketRegistry.MarketConfig memory cfg = _getMarketCfg($.marketRegistry, marketId);
+
+        _settlePosition($, user, marketId);
+
+        // Cross-collateral HF must be < 1 to allow liquidation
+        if (_healthFactor($, user) >= AuraStorage.WAD) revert Aura__HealthFactorAboveOne();
+
+        AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
+        AuraStorage.MarketState    storage ms  = $.marketStates[marketId];
+
+        uint256 debt = _currentDebtInMarket($, user, marketId);
         if (repayAmount > debt) repayAmount = debt;
-        uint256 penaltyBps = $.liquidationPenaltyBps;
-        uint256 valuePerShare = _collateralValuePerShare($);
+
+        uint256 valuePerShare = _collateralValuePerShare(cfg);
         if (valuePerShare == 0) revert Aura__InvalidParams();
-        uint256 collateralToSeize = (repayAmount * (10_000 + penaltyBps) * AuraStorage.WAD) / (10_000 * valuePerShare);
-        AuraStorage.Position storage pos = $.positions[user];
+
+        uint256 collateralToSeize = (repayAmount * (10_000 + cfg.liquidationPenaltyBps) * AuraStorage.WAD)
+            / (10_000 * valuePerShare);
         if (collateralToSeize > pos.collateralShares) collateralToSeize = pos.collateralShares;
+
         unchecked {
-            pos.principalDebt -= repayAmount;
-            pos.collateralShares -= collateralToSeize;
-            $.totalPrincipalDebt -= repayAmount;
-            $.totalCollateralShares -= collateralToSeize;
+            pos.principalDebt        -= repayAmount;
+            pos.collateralShares      -= collateralToSeize;
+            ms.totalPrincipalDebt    -= repayAmount;
+            ms.totalCollateralShares -= collateralToSeize;
         }
+        _tryExitMarket($, user, marketId);
+
         _transferIn($.debtToken, msg.sender, repayAmount);
-        bool ok = IERC4626($.collateralVault).transfer(msg.sender, collateralToSeize);
+        bool ok = IERC4626(cfg.vault).transfer(msg.sender, collateralToSeize);
         if (!ok) revert Aura__InvalidParams();
-        emit Liquidated(user, msg.sender, repayAmount, collateralToSeize);
+        emit Liquidated(user, msg.sender, marketId, repayAmount, collateralToSeize);
     }
 
-    // ------------------------------- View: debt, health, ERC-4626 helpers
-    /// @notice Current debt for a user (principal * globalScale / scaleAtLastUpdate).
-    function getPositionDebt(address user) external view returns (uint256) {
-        return _currentDebtRaw(AuraStorage.getStorage(), user);
+    // ------------------------------- View
+    /// @notice Current debt for a user in a specific market.
+    function getPositionDebt(address user, uint256 marketId) external view returns (uint256) {
+        return _currentDebtInMarket(AuraStorage.getStorage(), user, marketId);
     }
 
-    function getPositionCollateralShares(address user) external view returns (uint256) {
-        return AuraStorage.getStorage().positions[user].collateralShares;
+    /// @notice Collateral shares held by a user in a specific market.
+    function getPositionCollateralShares(address user, uint256 marketId) external view returns (uint256) {
+        return AuraStorage.getStorage().positions[user][marketId].collateralShares;
     }
 
-    /// @notice Health factor (WAD). < 1e18 = liquidatable.
+    /// @notice Cross-collateral health factor (WAD). < 1e18 = liquidatable.
     function getHealthFactor(address user) external view returns (uint256) {
-        return _healthFactorRaw(AuraStorage.getStorage(), user);
+        return _healthFactor(AuraStorage.getStorage(), user);
     }
 
-    /// @notice Total debt across all positions (for 4626 / analytics).
-    function totalDebt() external view returns (uint256) {
+    /// @notice Total effective debt in a market (principal * scale / RAY).
+    function totalDebt(uint256 marketId) external view returns (uint256) {
+        AuraStorage.MarketState storage ms = AuraStorage.getStorage().marketStates[marketId];
+        if (ms.globalDebtScale == 0) return 0;
+        return (ms.totalPrincipalDebt * ms.globalDebtScale) / AuraStorage.RAY;
+    }
+
+    /// @notice Total collateral in underlying assets for a market.
+    function totalCollateralAssets(uint256 marketId) external view returns (uint256) {
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
-        return ($.totalPrincipalDebt * $.globalDebtScale) / AuraStorage.RAY;
+        IMarketRegistry.MarketConfig memory cfg = _getMarketCfg($.marketRegistry, marketId);
+        return IERC4626(cfg.vault).convertToAssets($.marketStates[marketId].totalCollateralShares);
     }
 
-    /// @notice Total collateral in underlying (for 4626 compatibility).
-    function totalCollateralAssets() external view returns (uint256) {
-        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
-        return IERC4626($.collateralVault).convertToAssets($.totalCollateralShares);
-    }
-
-    function asset() external view returns (address) {
-        return AuraStorage.getStorage().collateralVault;
-    }
-
-    /// @notice Address of the debt token (e.g. USDC). Used by frontends to display symbol and decimals.
+    /// @notice Debt token address.
     function debtToken() external view returns (address) {
         return AuraStorage.getStorage().debtToken;
     }
 
-    /// @notice Max LTV in basis points (e.g. 8500 = 85%). Used by frontends to show borrow limit.
-    function ltvBps() external view returns (uint16) {
-        return AuraStorage.getStorage().ltvBps;
+    /// @notice Market registry address.
+    function marketRegistry() external view returns (address) {
+        return AuraStorage.getStorage().marketRegistry;
     }
 
-    /// @notice Collateral value for a position in debt-token units (same decimals as debt token). For UI: maxBorrow ≈ (value * ltvBps / 10000) - debt.
-    function getPositionCollateralValue(address user) external view returns (uint256) {
+    /// @notice Fetch market config from registry.
+    function getMarket(uint256 marketId) external view returns (IMarketRegistry.MarketConfig memory) {
+        return _getMarketCfg(AuraStorage.getStorage().marketRegistry, marketId);
+    }
+
+    /// @notice Collateral value (in debt-token units) for a user's position in one market.
+    function getPositionCollateralValue(address user, uint256 marketId) external view returns (uint256) {
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
-        return (IERC4626($.collateralVault).convertToAssets($.positions[user].collateralShares) * _getPrice($)) / AuraStorage.WAD;
+        IMarketRegistry.MarketConfig memory cfg = _getMarketCfg($.marketRegistry, marketId);
+        uint256 assets = IERC4626(cfg.vault).convertToAssets($.positions[user][marketId].collateralShares);
+        (uint256 price, ) = IOracleRelay(cfg.oracle).getLatestPrice();
+        return (assets * price) / AuraStorage.WAD;
     }
 
-    // ------------------------------- Internal: settle, health, pricing
-    /// @dev Settle user position: set principal = current debt, scaleAtLastUpdate = globalScale. Updates totalPrincipalDebt.
-    function _settlePosition(AuraStorage.EngineStorage storage $, address user) internal {
-        AuraStorage.Position storage pos = $.positions[user];
-        uint256 oldPrincipal = pos.principalDebt;
-        uint256 scale = $.globalDebtScale;
-        uint256 scaleAt = pos.scaleAtLastUpdate;
-        if (scaleAt == 0) scaleAt = AuraStorage.RAY;
-        uint256 currentDebt = FixedPoint.currentDebt(oldPrincipal, scale, scaleAt);
-        pos.principalDebt = currentDebt;
-        pos.scaleAtLastUpdate = scale;
-        // Safe arithmetic: avoid underflow if rounding made oldPrincipal > totalPrincipalDebt
-        uint256 total = $.totalPrincipalDebt;
-        if (oldPrincipal > total) {
-            $.totalPrincipalDebt = currentDebt;
+    /// @notice List of market IDs where a user has an active position.
+    function getUserMarkets(address user) external view returns (uint256[] memory) {
+        return AuraStorage.getStorage().userMarketIds[user];
+    }
+
+    // ------------------------------- Internal: market helpers
+    function _requireActiveMarket(
+        address registry,
+        uint256 marketId
+    ) internal view returns (IMarketRegistry.MarketConfig memory cfg) {
+        cfg = _getMarketCfg(registry, marketId);
+        if (!cfg.isActive)  revert Aura__MarketInactive();
+        if (cfg.isFrozen)   revert Aura__MarketFrozen();
+    }
+
+    function _getMarketCfg(
+        address registry,
+        uint256 marketId
+    ) internal view returns (IMarketRegistry.MarketConfig memory) {
+        if (!IMarketRegistry(registry).marketExists(marketId)) revert Aura__MarketNotFound();
+        return IMarketRegistry(registry).getMarket(marketId);
+    }
+
+    // ------------------------------- Internal: isolation mode
+    function _checkIsolationOnDeposit(
+        AuraStorage.EngineStorage storage $,
+        address user,
+        uint256 marketId,
+        bool    isIsolated
+    ) internal {
+        if (isIsolated) {
+            // User must not have other active markets
+            uint256[] storage mids = $.userMarketIds[user];
+            for (uint256 i = 0; i < mids.length; i++) {
+                if (mids[i] != marketId) {
+                    AuraStorage.MarketPosition storage p = $.positions[user][mids[i]];
+                    if (p.collateralShares > 0 || p.principalDebt > 0) revert Aura__IsolationViolation();
+                }
+            }
+            $.userInIsolation[user]   = true;
+            $.userIsolatedMarket[user] = marketId;
         } else {
-            $.totalPrincipalDebt = total - oldPrincipal + currentDebt;
+            // User must not be in isolation mode (unless entering their own isolated market)
+            if ($.userInIsolation[user] && $.userIsolatedMarket[user] != marketId)
+                revert Aura__IsolationViolation();
         }
     }
 
-    function _currentDebtRaw(AuraStorage.EngineStorage storage $, address user) internal view returns (uint256) {
-        AuraStorage.Position storage pos = $.positions[user];
-        if (pos.scaleAtLastUpdate == 0) return 0;
-        return FixedPoint.currentDebt(pos.principalDebt, $.globalDebtScale, pos.scaleAtLastUpdate);
+    /// @dev Remove market from user tracking when position fully zeroed.
+    function _tryExitMarket(
+        AuraStorage.EngineStorage storage $,
+        address user,
+        uint256 marketId
+    ) internal {
+        AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
+        if (pos.collateralShares == 0 && pos.principalDebt == 0) {
+            $.userInMarket[user][marketId] = false;
+            // Remove from array (swap-and-pop)
+            uint256[] storage mids = $.userMarketIds[user];
+            uint256 len = mids.length;
+            for (uint256 i = 0; i < len; i++) {
+                if (mids[i] == marketId) {
+                    mids[i] = mids[len - 1];
+                    mids.pop();
+                    break;
+                }
+            }
+            // Clear isolation if this was the isolated market
+            if ($.userInIsolation[user] && $.userIsolatedMarket[user] == marketId) {
+                $.userInIsolation[user]    = false;
+                $.userIsolatedMarket[user] = 0;
+            }
+        }
     }
 
-    function _healthFactorRaw(AuraStorage.EngineStorage storage $, address user) internal view returns (uint256) {
-        uint256 debt = _currentDebtRaw($, user);
-        if (debt == 0) return type(uint256).max;
-        uint256 collateralValue = (IERC4626($.collateralVault).convertToAssets($.positions[user].collateralShares) * _getPrice($)) / AuraStorage.WAD;
-        return (collateralValue * 10_000 * AuraStorage.WAD) / ($.liquidationThresholdBps * debt);
+    // ------------------------------- Internal: settle & health
+    function _settlePosition(
+        AuraStorage.EngineStorage storage $,
+        address user,
+        uint256 marketId
+    ) internal {
+        AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
+        AuraStorage.MarketState    storage ms  = $.marketStates[marketId];
+        uint256 scale   = ms.globalDebtScale == 0 ? AuraStorage.RAY : ms.globalDebtScale;
+        uint256 scaleAt = pos.scaleAtLastUpdate == 0 ? AuraStorage.RAY : pos.scaleAtLastUpdate;
+        uint256 oldPrincipal = pos.principalDebt;
+        uint256 currentDebt  = FixedPoint.currentDebt(oldPrincipal, scale, scaleAt);
+        pos.principalDebt     = currentDebt;
+        pos.scaleAtLastUpdate = scale;
+        uint256 total = ms.totalPrincipalDebt;
+        ms.totalPrincipalDebt = oldPrincipal > total ? currentDebt : total - oldPrincipal + currentDebt;
     }
 
-    function _requireHealthy(address user) internal view {
-        if (_healthFactorRaw(AuraStorage.getStorage(), user) < AuraStorage.WAD) revert Aura__HealthFactorBelowOne();
+    function _currentDebtInMarket(
+        AuraStorage.EngineStorage storage $,
+        address user,
+        uint256 marketId
+    ) internal view returns (uint256) {
+        AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
+        if (pos.scaleAtLastUpdate == 0 && pos.principalDebt == 0) return 0;
+        AuraStorage.MarketState storage ms = $.marketStates[marketId];
+        uint256 scale   = ms.globalDebtScale   == 0 ? AuraStorage.RAY : ms.globalDebtScale;
+        uint256 scaleAt = pos.scaleAtLastUpdate == 0 ? AuraStorage.RAY : pos.scaleAtLastUpdate;
+        return FixedPoint.currentDebt(pos.principalDebt, scale, scaleAt);
     }
 
-    function _requireLtv(address user) internal view {
-        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
-        uint256 debt = _currentDebtRaw($, user);
+    /// @dev Cross-collateral health factor:
+    ///      HF = Σ(collateralValue_i * liquidationThreshold_i / 10000) / Σ(debt_i)
+    function _healthFactor(
+        AuraStorage.EngineStorage storage $,
+        address user
+    ) internal view returns (uint256) {
+        uint256[] storage mids = $.userMarketIds[user];
+        uint256 totalWeightedCollateral;
+        uint256 totalUserDebt;
+        uint256 len = mids.length;
+        for (uint256 i = 0; i < len; i++) {
+            uint256 mid = mids[i];
+            AuraStorage.MarketPosition storage pos = $.positions[user][mid];
+            if (pos.collateralShares == 0 && pos.principalDebt == 0) continue;
+            IMarketRegistry.MarketConfig memory cfg = IMarketRegistry($.marketRegistry).getMarket(mid);
+            uint256 assets = IERC4626(cfg.vault).convertToAssets(pos.collateralShares);
+            (uint256 price, ) = IOracleRelay(cfg.oracle).getLatestPrice();
+            uint256 collateralValue = (assets * price) / AuraStorage.WAD;
+            totalWeightedCollateral += (collateralValue * cfg.liquidationThresholdBps) / 10_000;
+            totalUserDebt           += _currentDebtInMarket($, user, mid);
+        }
+        if (totalUserDebt == 0) return type(uint256).max;
+        return (totalWeightedCollateral * AuraStorage.WAD) / totalUserDebt;
+    }
+
+    function _requireHealthy(AuraStorage.EngineStorage storage $, address user) internal view {
+        if (_healthFactor($, user) < AuraStorage.WAD) revert Aura__HealthFactorBelowOne();
+    }
+
+    function _requireLtv(
+        AuraStorage.EngineStorage storage $,
+        address user,
+        uint256 marketId,
+        IMarketRegistry.MarketConfig memory cfg
+    ) internal view {
+        uint256 debt = _currentDebtInMarket($, user, marketId);
         if (debt == 0) return;
-        uint256 collateralValue = (IERC4626($.collateralVault).convertToAssets($.positions[user].collateralShares) * _getPrice($)) / AuraStorage.WAD;
-        if ((debt * 10_000) > (collateralValue * $.ltvBps)) revert Aura__ExceedsLTV();
+        AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
+        uint256 assets = IERC4626(cfg.vault).convertToAssets(pos.collateralShares);
+        (uint256 price, ) = IOracleRelay(cfg.oracle).getLatestPrice();
+        uint256 collateralValue = (assets * price) / AuraStorage.WAD;
+        if ((debt * 10_000) > (collateralValue * cfg.ltvBps)) revert Aura__ExceedsLTV();
     }
 
-    function _currentPricePerShare() internal view returns (uint256) {
-        return IERC4626(AuraStorage.getStorage().collateralVault).convertToAssets(AuraStorage.WAD);
-    }
-
-    /// @dev Collateral value (in debt token) per 1e18 share
-    function _collateralValuePerShare(AuraStorage.EngineStorage storage $) internal view returns (uint256) {
-        uint256 assetsPerShare = IERC4626($.collateralVault).convertToAssets(AuraStorage.WAD);
-        return (assetsPerShare * _getPrice($)) / AuraStorage.WAD;
-    }
-
-    function _getPrice(AuraStorage.EngineStorage storage $) internal view returns (uint256) {
-        (uint256 price, ) = IOracleRelay($.oracleRelay).getLatestPrice();
-        return price;
+    function _collateralValuePerShare(
+        IMarketRegistry.MarketConfig memory cfg
+    ) internal view returns (uint256) {
+        uint256 assetsPerShare = IERC4626(cfg.vault).convertToAssets(AuraStorage.WAD);
+        (uint256 price, ) = IOracleRelay(cfg.oracle).getLatestPrice();
+        return (assetsPerShare * price) / AuraStorage.WAD;
     }
 
     function _transferIn(address token, address from, uint256 amount) internal {
-        (bool ok, bytes memory returndata) = token.call(abi.encodeWithSelector(0x23b872dd, from, address(this), amount));
-        if (!ok || (returndata.length != 0 && !abi.decode(returndata, (bool)))) revert Aura__InvalidParams();
+        (bool ok, bytes memory ret) = token.call(abi.encodeWithSelector(0x23b872dd, from, address(this), amount));
+        if (!ok || (ret.length != 0 && !abi.decode(ret, (bool)))) revert Aura__InvalidParams();
     }
 
     function _transferOut(address token, address to, uint256 amount) internal {
-        (bool ok, bytes memory returndata) = token.call(abi.encodeWithSelector(0xa9059cbb, to, amount));
-        if (!ok || (returndata.length != 0 && !abi.decode(returndata, (bool)))) revert Aura__InvalidParams();
+        (bool ok, bytes memory ret) = token.call(abi.encodeWithSelector(0xa9059cbb, to, amount));
+        if (!ok || (ret.length != 0 && !abi.decode(ret, (bool)))) revert Aura__InvalidParams();
     }
 }

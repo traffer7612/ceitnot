@@ -44,6 +44,10 @@ if (-not $match.Success) {
 $addr = $match.Groups[1].Value
 Write-Host "Deployed engine at: $addr"
 
+$registryMatch = [regex]::Match($out, "AURA_REGISTRY_ADDRESS=(0x[a-fA-F0-9]{40})")
+$registryAddr = if ($registryMatch.Success) { $registryMatch.Groups[1].Value } else { "" }
+if ($registryAddr) { Write-Host "Registry at: $registryAddr" }
+
 $vaultMatch = [regex]::Match($out, "AURA_VAULT_4626_ADDRESS=(0x[a-fA-F0-9]{40})")
 $vaultAddr = if ($vaultMatch.Success) { $vaultMatch.Groups[1].Value } else { "" }
 if ($vaultAddr) { Write-Host "Vault at: $vaultAddr" }
@@ -51,6 +55,13 @@ if ($vaultAddr) { Write-Host "Vault at: $vaultAddr" }
 $envPath = Join-Path $PSScriptRoot "..\backend\.env"
 $content = Get-Content $envPath -Raw
 $content = $content -replace "AURA_ENGINE_ADDRESS=0x[a-fA-F0-9]{40}", "AURA_ENGINE_ADDRESS=$addr"
+if ($registryAddr) {
+    if ($content -match "AURA_REGISTRY_ADDRESS") {
+        $content = $content -replace "#?\s*AURA_REGISTRY_ADDRESS=.*", "AURA_REGISTRY_ADDRESS=$registryAddr"
+    } else {
+        $content = $content + "`nAURA_REGISTRY_ADDRESS=$registryAddr"
+    }
+}
 if ($vaultAddr -and $content -match "AURA_VAULT_4626_ADDRESS") {
     $content = $content -replace "#?\s*AURA_VAULT_4626_ADDRESS=.*", "AURA_VAULT_4626_ADDRESS=$vaultAddr"
 }

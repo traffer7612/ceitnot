@@ -8,11 +8,11 @@ pragma solidity ^0.8.20;
  *         with implementation contract storage and other namespaces across upgrades.
  * @dev Storage location: erc7201("com.aura.engine.v1")
  *      Formula: keccak256(abi.encode(uint256(keccak256("com.aura.engine.v1")) - 1)) & ~bytes32(uint256(0xff))
+ *
+ *      Phase 2: multi-market layout. Single-market fields removed; per-market state lives in
+ *      `marketStates` and per-user-per-market positions in `positions`.
  */
 library AuraStorage {
-    /// @notice Namespace id for ERC-7201; unique and stable across upgrades
-    bytes32 private constant NAMESPACE_ID = keccak256("com.aura.engine.v1");
-
     /// @dev ERC-7201 base slot (literal for assembly). Precomputed: erc7201("com.aura.engine.v1")
     uint256 private constant AURA_ENGINE_STORAGE_SLOT =
         0x183a6125c38840424c4a85fa12bab2ab606c4b6d0e7cc73c0c06ba5300eab500;
@@ -21,67 +21,84 @@ library AuraStorage {
     uint256 internal constant WAD = 1e18;
     uint256 internal constant RAY = 1e27;
 
-    /// @notice Position data: collateral (4626 shares) and debt with index for O(1) settlement
-    struct Position {
-        uint256 collateralShares;   // Collateral in vault shares (WAD)
-        uint256 principalDebt;      // Debt principal at scaleAtLastUpdate (WAD)
-        uint256 scaleAtLastUpdate;  // globalDebtScale when position was last touched (RAY)
-        uint256 lastInteractionBlock; // For flash-loan / TWAP protection
+    // ------------------------------------------------------------------ structs
+
+    /// @notice Mutable per-market state (changes every harvest / interaction).
+    struct MarketState {
+        uint256 globalDebtScale;          // RAY; starts at RAY, decreases as yield reduces debt
+        uint256 lastHarvestPricePerShare;  // WAD; vault price at last harvest
+        uint256 lastHarvestTimestamp;
+        uint256 totalCollateralShares;     // WAD; sum of all user shares in this market
+        uint256 totalPrincipalDebt;        // WAD; sum of all user principal debts in this market
+    }
+
+    /// @notice Per-user per-market position.
+    struct MarketPosition {
+        uint256 collateralShares;     // ERC-4626 shares deposited (WAD)
+        uint256 principalDebt;        // Debt principal at scaleAtLastUpdate (WAD)
+        uint256 scaleAtLastUpdate;    // globalDebtScale snapshot when last touched (RAY)
+        uint256 lastInteractionBlock; // Flash-loan / same-block protection
     }
 
     /// @notice Global protocol state
     /// @custom:storage-location erc7201:com.aura.engine.v1
     struct EngineStorage {
-        // --- Collateral & Debt
-        address collateralVault;       // ERC-4626 vault (e.g. stETH wrapper)
-        address debtToken;             // Stablecoin or synthetic debt token
-        address oracleRelay;           // Multi-oracle (Chainlink + RedStone fallback)
-        uint256 totalCollateralShares; // Sum of all position collateral shares (WAD)
-        uint256 totalPrincipalDebt;    // Sum of all position principals (WAD)
-        // --- Global index for stream-settlement (yield siphon)
-        uint256 globalDebtScale;       // RAY; effective totalDebt = totalPrincipalDebt * globalDebtScale / RAY
-        uint256 lastHarvestPricePerShare; // WAD; vault assets per 1e18 share at last harvest
-        uint256 lastHarvestTimestamp;
-        // --- Risk
-        uint16 ltvBps;                 // Max LTV e.g. 8000 = 80%
-        uint16 liquidationThresholdBps;
-        uint16 liquidationPenaltyBps;
-        // --- Circuit breaker & access
-        bool paused;
-        bool emergencyShutdown;
-        uint256 heartbeat;             // Min seconds between harvests
-        uint256 minHarvestYieldDebt;   // Min yield (in debt token) to trigger harvest
-        // --- Flash loan / manipulation protection
-        uint256 twapPeriod;            // Seconds for TWAP; 0 = spot only
-        mapping(address => Position) positions;
-        mapping(address => bool) allowedBorrowers;
-        // --- Timelock / governance
+        // ---- Core addresses
+        address debtToken;        // Stablecoin / synthetic debt token (single across all markets)
+        address marketRegistry;   // AuraMarketRegistry contract address
+
+        // ---- Per-market mutable state
+        mapping(uint256 => MarketState) marketStates;
+
+        // ---- Per-user per-market positions: user => marketId => MarketPosition
+        mapping(address => mapping(uint256 => MarketPosition)) positions;
+
+        // ---- User market tracking (needed for cross-collateral health factor)
+        mapping(address => uint256[]) userMarketIds;            // ordered list of markets user entered
+        mapping(address => mapping(uint256 => bool)) userInMarket; // quick existence check
+
+        // ---- Isolation mode
+        mapping(address => bool)    userInIsolation;    // true if user is in an isolated market
+        mapping(address => uint256) userIsolatedMarket; // which market is isolated
+
+        // ---- Circuit breaker & access
+        bool    paused;
+        bool    emergencyShutdown;
+        uint256 heartbeat;           // Min seconds between harvests (engine-level default)
+        uint256 minHarvestYieldDebt; // Min yield (debt token units) to apply in one harvest
+
+        // ---- Governance / timelock
         uint256 constantTimelockDelay;
         mapping(bytes32 => uint256) timelockDeadline;
+        mapping(bytes32 => uint256) pendingParamValue;   // engine-level params
+        // Per-market timelocked param storage: key = keccak256(abi.encode(marketId, paramId))
+        mapping(bytes32 => uint256) pendingMarketParamValue;
+
         address admin;
-        mapping(bytes32 => uint256) pendingParamValue; // paramId => value to apply after timelock
-        // --- Phase 1 Security: Reentrancy guard
-        uint256 reentrancyStatus;       // 1 = NOT_ENTERED, 2 = ENTERED
-        // --- Phase 1 Security: Two-step admin transfer
         address pendingAdmin;
-        // --- Phase 1 Security: Role-based access
-        mapping(address => bool) guardians;
-        mapping(address => bool) keepers;
-        // --- Phase 1 Security: Initializable
-        uint256 initializationVersion;  // 0 = uninitialized, type(uint256).max = disabled
-        // --- Storage gap for future upgrades
+        mapping(address => bool) guardians; // can pause / emergency-shutdown
+        mapping(address => bool) keepers;   // can trigger harvestYield
+
+        // ---- Initializable
+        uint256 initializationVersion; // 0 = uninitialized, type(uint256).max = disabled
+
+        // ---- Reentrancy guard
+        uint256 reentrancyStatus; // 1 = NOT_ENTERED, 2 = ENTERED
+
+        // ---- Storage gap for future upgrades (each new variable consumes one slot)
         uint256[50] __gap;
     }
 
-    /// @notice Returns the namespaced storage struct pointer
-    /// @return $ Pointer to EngineStorage at the ERC-7201 slot
+    // ------------------------------------------------------------------ accessor
+
+    /// @notice Returns the namespaced storage struct pointer.
     function getStorage() internal pure returns (EngineStorage storage $) {
         assembly {
             $.slot := AURA_ENGINE_STORAGE_SLOT
         }
     }
 
-    /// @notice Returns the ERC-7201 storage slot (for verification and tooling)
+    /// @notice Returns the ERC-7201 storage slot (for verification and tooling).
     function getStorageSlot() external pure returns (bytes32) {
         return bytes32(AURA_ENGINE_STORAGE_SLOT);
     }
