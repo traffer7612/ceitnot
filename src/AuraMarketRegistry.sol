@@ -130,7 +130,9 @@ contract AuraMarketRegistry is IMarketRegistry {
             fullLiquidationThresholdBps: 0,
             protocolLiquidationFeeBps:   0,
             dutchAuctionEnabled:         false,
-            auctionDuration:             0
+            auctionDuration:             0,
+            yieldFeeBps:                 0,
+            originationFeeBps:           0
         });
         _exists[marketId] = true;
         emit MarketAdded(marketId, vault, oracle);
@@ -223,6 +225,20 @@ contract AuraMarketRegistry is IMarketRegistry {
         cfg.protocolLiquidationFeeBps   = protocolLiquidationFeeBps;
         cfg.dutchAuctionEnabled         = dutchAuctionEnabled;
         cfg.auctionDuration             = auctionDuration;
+        emit MarketRiskParamsUpdated(marketId);
+    }
+
+    /// @notice Update fee parameters for a market (yield fee + origination fee).
+    function updateMarketFeeParams(
+        uint256 marketId,
+        uint16  yieldFeeBps,
+        uint16  originationFeeBps
+    ) external onlyAdmin {
+        if (!_exists[marketId]) revert Registry__MarketNotFound();
+        if (yieldFeeBps > 10_000)       revert Registry__InvalidParams();
+        if (originationFeeBps > 10_000) revert Registry__InvalidParams();
+        _markets[marketId].yieldFeeBps       = yieldFeeBps;
+        _markets[marketId].originationFeeBps = originationFeeBps;
         emit MarketRiskParamsUpdated(marketId);
     }
 

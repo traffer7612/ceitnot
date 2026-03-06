@@ -844,6 +844,114 @@ contract AuraTest is Test {
         vm.stopPrank();
     }
 
+    // ==================== Phase 5: Fee Architecture Tests ====================
+
+    // ---- 5.2 Origination Fee ----
+
+    function test_p5_originationFee_increasesDebt() public {
+        // originationFeeBps = 100 (1%)
+        registry.updateMarketFeeParams(MARKET_ID, 0, 100);
+        vm.prank(alice);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        vm.roll(10);
+        vm.prank(alice);
+        engine.borrow(alice, MARKET_ID, 50 * WAD);
+
+        // debt = 50 + 50 * 1% = 50.5 WAD
+        uint256 debt = engine.getPositionDebt(alice, MARKET_ID);
+        assertEq(debt, 50 * WAD + 50 * WAD / 100);
+    }
+
+    function test_p5_originationFee_addedToReserves() public {
+        registry.updateMarketFeeParams(MARKET_ID, 0, 100); // 1%
+        vm.prank(alice);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        vm.roll(10);
+        uint256 reservesBefore = engine.getMarketTotalReserves(MARKET_ID);
+        vm.prank(alice);
+        engine.borrow(alice, MARKET_ID, 50 * WAD);
+
+        uint256 reservesAfter = engine.getMarketTotalReserves(MARKET_ID);
+        uint256 expectedFee = 50 * WAD / 100; // 0.5 WAD
+        assertEq(reservesAfter - reservesBefore, expectedFee);
+    }
+
+    function test_p5_originationFee_zero_preservesBehavior() public {
+        // Default originationFeeBps = 0 → debt = exactly borrowed amount
+        vm.prank(alice);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        vm.roll(10);
+        vm.prank(alice);
+        engine.borrow(alice, MARKET_ID, 50 * WAD);
+
+        assertEq(engine.getPositionDebt(alice, MARKET_ID), 50 * WAD);
+        assertEq(engine.getMarketTotalReserves(MARKET_ID), 0);
+    }
+
+    function test_p5_originationFee_userReceivesOnlyAmount() public {
+        // User receives `amount` tokens even though debt = amount + fee
+        registry.updateMarketFeeParams(MARKET_ID, 0, 1000); // 10%
+        vm.prank(alice);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        vm.roll(10);
+        uint256 balBefore = debtToken.balanceOf(alice);
+        vm.prank(alice);
+        engine.borrow(alice, MARKET_ID, 50 * WAD);
+
+        // Alice receives exactly 50 WAD, not 55 WAD
+        assertEq(debtToken.balanceOf(alice) - balBefore, 50 * WAD);
+        // But owes 55 WAD
+        assertEq(engine.getPositionDebt(alice, MARKET_ID), 55 * WAD);
+    }
+
+    // ---- 5.1 Yield Fee ----
+
+    function test_p5_yieldFee_splitsHarvestToReserves() public {
+        // yieldFeeBps = 2000 (20% of yield goes to reserves)
+        registry.updateMarketFeeParams(MARKET_ID, 2000, 0);
+
+        vm.prank(alice);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        vm.roll(10);
+        vm.prank(alice);
+        engine.borrow(alice, MARKET_ID, 50 * WAD);
+
+        // Simulate vault yield: double the price per share
+        MockVault4626(address(vault)).simulateYield(2 * WAD);
+        vm.warp(block.timestamp + 2 days);
+
+        uint256 debtBefore   = engine.getPositionDebt(alice, MARKET_ID);
+        uint256 reservesBefore = engine.getMarketTotalReserves(MARKET_ID);
+
+        engine.harvestYield(MARKET_ID);
+
+        uint256 debtAfter    = engine.getPositionDebt(alice, MARKET_ID);
+        uint256 reservesAfter  = engine.getMarketTotalReserves(MARKET_ID);
+
+        // Debt should decrease by the yield applied to debt (80% of total yield)
+        assertTrue(debtAfter < debtBefore, "debt should decrease from harvest");
+        // Reserves should increase by protocol share (20% of total yield)
+        assertTrue(reservesAfter > reservesBefore, "reserves should grow from yield fee");
+    }
+
+    function test_p5_yieldFee_zero_noReservesFromHarvest() public {
+        // Default yieldFeeBps = 0 → no protocol cut of yield harvest
+        vm.prank(alice);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        vm.roll(10);
+        vm.prank(alice);
+        engine.borrow(alice, MARKET_ID, 50 * WAD);
+
+        MockVault4626(address(vault)).simulateYield(2 * WAD);
+        vm.warp(block.timestamp + 2 days);
+
+        uint256 reservesBefore = engine.getMarketTotalReserves(MARKET_ID);
+        engine.harvestYield(MARKET_ID);
+
+        // No yield fee → reserves unchanged by harvest
+        assertEq(engine.getMarketTotalReserves(MARKET_ID), reservesBefore);
+    }
+
     // ==================== Multi-market: cross-collateral HF ====================
 
     function test_multiMarket_crossCollateralHF() public {

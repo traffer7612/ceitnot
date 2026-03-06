@@ -52,7 +52,8 @@ contract AuraEngine {
     event CollateralWithdrawn(address indexed user, uint256 indexed marketId, uint256 shares);
     event Borrowed(address indexed user, uint256 indexed marketId, uint256 amount);
     event Repaid(address indexed user, uint256 indexed marketId, uint256 amount);
-    event YieldHarvested(uint256 indexed marketId, uint256 yieldUnderlying, uint256 yieldAppliedToDebt, uint256 newScale);
+    event YieldHarvested(uint256 indexed marketId, uint256 yieldUnderlying, uint256 yieldAppliedToDebt, uint256 protocolYield, uint256 newScale);
+    event OriginationFeeCharged(address indexed user, uint256 indexed marketId, uint256 fee);
     event Liquidated(address indexed user, address indexed liquidator, uint256 indexed marketId, uint256 repayAmount, uint256 collateralSeized);
     event InterestAccrued(uint256 indexed marketId, uint256 interestAccrued, uint256 reservesAccrued, uint256 newBorrowIndex);
     event ReservesWithdrawn(uint256 indexed marketId, address indexed to, uint256 amount);
@@ -451,10 +452,6 @@ contract AuraEngine {
         AuraStorage.MarketState   storage ms  = $.marketStates[marketId];
         AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
 
-        // Borrow cap check
-        if (cfg.borrowCap != 0 && ms.totalPrincipalDebt + amount > cfg.borrowCap)
-            revert Aura__BorrowCapExceeded();
-
         // Isolation borrow cap
         if (cfg.isIsolated && cfg.isolatedBorrowCap != 0) {
             uint256 currentIsolatedDebt = (ms.totalPrincipalDebt * _effectiveScale(ms)) / AuraStorage.RAY;
@@ -462,9 +459,25 @@ contract AuraEngine {
                 revert Aura__BorrowCapExceeded();
         }
 
-        pos.principalDebt    += amount;
+        // ---- 5.2 Origination Fee
+        uint256 originationFee;
+        if (cfg.originationFeeBps > 0) {
+            originationFee = (amount * cfg.originationFeeBps) / 10_000;
+        }
+        uint256 totalDebtAdded = amount + originationFee;
+
+        // Re-check borrow cap against full debt increase
+        if (cfg.borrowCap != 0 && ms.totalPrincipalDebt + totalDebtAdded > cfg.borrowCap)
+            revert Aura__BorrowCapExceeded();
+
+        pos.principalDebt    += totalDebtAdded;
         pos.scaleAtLastUpdate = _effectiveScale(ms);
-        ms.totalPrincipalDebt += amount;
+        ms.totalPrincipalDebt += totalDebtAdded;
+
+        if (originationFee > 0) {
+            ms.totalReserves += originationFee;
+            emit OriginationFeeCharged(user, marketId, originationFee);
+        }
 
         _requireLtv($, user, marketId, cfg);
         _transferOut($.debtToken, user, amount);
@@ -550,12 +563,20 @@ contract AuraEngine {
         }
         if (yieldDebt > totalDebtNow) yieldDebt = totalDebtNow;
 
-        ms.globalDebtScale          = FixedPoint.scaleAfterYield(ms.globalDebtScale, totalDebtNow, yieldDebt);
+        // ---- 5.1 Yield Fee
+        uint256 protocolYield;
+        if (cfg.yieldFeeBps > 0) {
+            protocolYield = (yieldDebt * cfg.yieldFeeBps) / 10_000;
+            ms.totalReserves += protocolYield;
+        }
+        uint256 yieldAppliedToDebt = yieldDebt - protocolYield;
+
+        ms.globalDebtScale          = FixedPoint.scaleAfterYield(ms.globalDebtScale, totalDebtNow, yieldAppliedToDebt);
         ms.lastHarvestPricePerShare  = currentPrice;
         ms.lastHarvestTimestamp      = block.timestamp;
 
-        emit YieldHarvested(marketId, yieldUnderlying, yieldDebt, ms.globalDebtScale);
-        return yieldDebt;
+        emit YieldHarvested(marketId, yieldUnderlying, yieldAppliedToDebt, protocolYield, ms.globalDebtScale);
+        return yieldAppliedToDebt;
     }
 
     // ------------------------------- Liquidation

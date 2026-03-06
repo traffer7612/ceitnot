@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import { MockERC20 } from "./MockERC20.sol";
 
-/// @notice Minimal ERC-4626–style vault for testing: 1 share = 1 asset.
+/// @notice Minimal ERC-4626–style vault for testing: 1 share = 1 asset (adjustable via simulateYield).
 contract MockVault4626 {
     MockERC20 public immutable ASSET_TOKEN;
     string public name;
@@ -12,6 +12,9 @@ contract MockVault4626 {
     uint256 public totalSupply;
     mapping(address => uint256) public balanceOf;
     mapping(address => mapping(address => uint256)) public allowance;
+
+    /// @dev Price per share in WAD (1e18 = 1:1). Increase via simulateYield to trigger harvest.
+    uint256 public pricePerShare = 1e18;
 
     constructor(address asset_, string memory name_, string memory symbol_) {
         ASSET_TOKEN = MockERC20(asset_);
@@ -27,12 +30,17 @@ contract MockVault4626 {
         return ASSET_TOKEN.balanceOf(address(this));
     }
 
-    function convertToAssets(uint256 shares) external pure returns (uint256) {
-        return shares;
+    function convertToAssets(uint256 shares) external view returns (uint256) {
+        return shares * pricePerShare / 1e18;
     }
 
-    function convertToShares(uint256 assets) external pure returns (uint256) {
-        return assets;
+    function convertToShares(uint256 assets) external view returns (uint256) {
+        return assets * 1e18 / pricePerShare;
+    }
+
+    /// @dev Set a new price per share to simulate vault yield (e.g. 2e18 = 2:1 ratio).
+    function simulateYield(uint256 newPricePerShare) external {
+        pricePerShare = newPricePerShare;
     }
 
     function deposit(uint256 assets, address receiver) external returns (uint256 shares) {

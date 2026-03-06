@@ -29,6 +29,9 @@ interface IMarketRegistry {
         uint16  protocolLiquidationFeeBps;  // % of seized collateral going to protocol reserves; 0=none
         bool    dutchAuctionEnabled;        // If true, penalty grows linearly from 0 to max over auctionDuration
         uint256 auctionDuration;            // Seconds from auction start until maxPenalty; 0=instant maxPenalty
+        // ---- Fee Params (Phase 5)
+        uint16  yieldFeeBps;                // % of harvested yield going to protocol reserves (e.g. 1000=10%); 0=none
+        uint16  originationFeeBps;          // One-time fee on borrow added to principal (e.g. 10=0.1%); 0=none
     }
 
     /// @notice Fetch configuration for a market. Reverts if market does not exist.
@@ -66,5 +69,12 @@ interface IMarketRegistry {
         uint16  protocolLiquidationFeeBps,
         bool    dutchAuctionEnabled,
         uint256 auctionDuration
+    ) external;
+
+    /// @notice Update fee parameters for a market (yield fee + origination fee).
+    function updateMarketFeeParams(
+        uint256 marketId,
+        uint16  yieldFeeBps,
+        uint16  originationFeeBps
     ) external;
 }
