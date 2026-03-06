@@ -120,7 +120,12 @@ contract AuraMarketRegistry is IMarketRegistry {
             isActive:                true,
             isFrozen:                false,
             isIsolated:              isIsolated,
-            isolatedBorrowCap:       isolatedBorrowCap
+            isolatedBorrowCap:       isolatedBorrowCap,
+            baseRate:                0,
+            slope1:                  0,
+            slope2:                  0,
+            kink:                    0,
+            reserveFactorBps:        0
         });
         _exists[marketId] = true;
         emit MarketAdded(marketId, vault, oracle);
@@ -169,6 +174,29 @@ contract AuraMarketRegistry is IMarketRegistry {
         if (!_exists[marketId]) revert Registry__MarketNotFound();
         _markets[marketId].isActive = false;
         emit MarketActivated(marketId, false);
+    }
+
+    /// @notice Update Interest Rate Model parameters for a market.
+    function updateMarketIrmParams(
+        uint256 marketId,
+        uint256 baseRate,
+        uint256 slope1,
+        uint256 slope2,
+        uint256 kink,
+        uint16  reserveFactorBps
+    ) external onlyAdminOrEngine {
+        if (!_exists[marketId]) revert Registry__MarketNotFound();
+        if (reserveFactorBps > 10_000) revert Registry__InvalidParams();
+        // kink must be in [0, RAY] if non-zero
+        uint256 RAY = 1e27;
+        if (kink > RAY) revert Registry__InvalidParams();
+        MarketConfig storage cfg = _markets[marketId];
+        cfg.baseRate         = baseRate;
+        cfg.slope1           = slope1;
+        cfg.slope2           = slope2;
+        cfg.kink             = kink;
+        cfg.reserveFactorBps = reserveFactorBps;
+        emit MarketRiskParamsUpdated(marketId);
     }
 
     /// @notice Re-activate a previously deactivated market.

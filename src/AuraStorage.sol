@@ -30,6 +30,10 @@ library AuraStorage {
         uint256 lastHarvestTimestamp;
         uint256 totalCollateralShares;     // WAD; sum of all user shares in this market
         uint256 totalPrincipalDebt;        // WAD; sum of all user principal debts in this market
+        // ---- Interest accrual (Phase 3)
+        uint256 borrowIndex;              // RAY; starts at RAY, grows per-second with interest rate
+        uint256 lastAccrualTimestamp;     // seconds; 0 = uninitialized (treated as RAY)
+        uint256 totalReserves;            // WAD; accumulated protocol reserves from interest
     }
 
     /// @notice Per-user per-market position.

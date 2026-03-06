@@ -17,6 +17,12 @@ interface IMarketRegistry {
         bool    isFrozen;               // True → deposits and borrows disabled
         bool    isIsolated;             // True → position cannot mix with other collaterals
         uint256 isolatedBorrowCap;      // Max total debt when isolated (0 = unlimited)
+        // ---- Interest Rate Model (kink model, all rates RAY/sec; 0 = no interest)
+        uint256 baseRate;               // RAY/sec rate at 0 utilization
+        uint256 slope1;                 // RAY/sec marginal rate below kink
+        uint256 slope2;                 // RAY/sec marginal rate above kink
+        uint256 kink;                   // RAY optimal utilization (e.g. 0.8e27)
+        uint16  reserveFactorBps;       // Protocol cut of interest accrued (bps, e.g. 1000 = 10%)
     }
 
     /// @notice Fetch configuration for a market. Reverts if market does not exist.
@@ -34,5 +40,15 @@ interface IMarketRegistry {
         uint16  ltvBps,
         uint16  liquidationThresholdBps,
         uint16  liquidationPenaltyBps
+    ) external;
+
+    /// @notice Update IRM parameters for a market. Called by admin (no timelock required).
+    function updateMarketIrmParams(
+        uint256 marketId,
+        uint256 baseRate,
+        uint256 slope1,
+        uint256 slope2,
+        uint256 kink,
+        uint16  reserveFactorBps
     ) external;
 }

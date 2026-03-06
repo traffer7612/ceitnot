@@ -450,6 +450,175 @@ contract AuraTest is Test {
 
     // ==================== Multi-market: cross-collateral HF ====================
 
+    // ==================== IRM Tests ====================
+
+    /// @dev ~10% APR constant base rate (RAY/sec): 0.1 / 31_536_000 * 1e27 ≈ 3.17e18
+    uint256 constant APR_10_PCT = 3_170_979_198_376_458_650;
+
+    /**
+     * @dev Helper: set IRM params on MARKET_ID and set borrowCap.
+     *      baseRate = APR_10_PCT, slope1/slope2/kink = 0 (constant rate regardless of util).
+     *      reserveFactorBps = 1000 (10%).
+     */
+    function _enableIrm() internal {
+        // borrowCap needed so repay-in-full doesn't underflow totalPrincipalDebt, but also
+        // doesn't cap utilisation (we use baseRate only, ignoring utilization).
+        registry.updateMarketCaps(MARKET_ID, 0, 0); // keep caps unlimited
+        registry.updateMarketIrmParams(MARKET_ID, APR_10_PCT, 0, 0, 0, 1000);
+    }
+
+    function test_irm_borrowIndexStaysRayWhenNoIrm() public {
+        // With no IRM configured, borrowIndex should remain RAY after any warp
+        vm.prank(alice);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        vm.roll(block.number + 1);
+        vm.prank(alice);
+        engine.borrow(alice, MARKET_ID, 50 * WAD);
+        vm.warp(block.timestamp + 365 days);
+        engine.accrueInterest(MARKET_ID);
+        assertEq(engine.getMarketBorrowIndex(MARKET_ID), 1e27, "no-IRM index should stay RAY");
+    }
+
+    function test_irm_borrowIndexGrowsWithTime() public {
+        _enableIrm();
+        vm.prank(alice);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        vm.roll(block.number + 1);
+        vm.prank(alice);
+        engine.borrow(alice, MARKET_ID, 50 * WAD);
+
+        uint256 indexBefore = engine.getMarketBorrowIndex(MARKET_ID);
+        assertEq(indexBefore, 1e27, "initial index should be RAY");
+
+        vm.warp(block.timestamp + 365 days);
+        vm.roll(block.number + 1);
+        engine.accrueInterest(MARKET_ID);
+
+        uint256 indexAfter = engine.getMarketBorrowIndex(MARKET_ID);
+        assertTrue(indexAfter > indexBefore, "borrowIndex should grow over time");
+    }
+
+    function test_irm_debtIncreasesWithInterest() public {
+        _enableIrm();
+        vm.prank(alice);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        vm.roll(block.number + 1);
+        vm.prank(alice);
+        engine.borrow(alice, MARKET_ID, 50 * WAD);
+
+        uint256 debtBefore = engine.getPositionDebt(alice, MARKET_ID);
+        assertEq(debtBefore, 50 * WAD);
+
+        vm.warp(block.timestamp + 365 days);
+        vm.roll(block.number + 1);
+        engine.accrueInterest(MARKET_ID);
+
+        uint256 debtAfter = engine.getPositionDebt(alice, MARKET_ID);
+        assertTrue(debtAfter > debtBefore, "debt should increase with interest accrual");
+        // ~10% interest on 50 WAD over 1 year ≈ 55 WAD
+        assertTrue(debtAfter > 50 * WAD && debtAfter <= 60 * WAD, "~10% APR for 1yr");
+    }
+
+    function test_irm_reservesAccumulate() public {
+        _enableIrm();
+        vm.prank(alice);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        vm.roll(block.number + 1);
+        vm.prank(alice);
+        engine.borrow(alice, MARKET_ID, 50 * WAD);
+
+        assertEq(engine.getMarketTotalReserves(MARKET_ID), 0, "no reserves before accrual");
+
+        vm.warp(block.timestamp + 365 days);
+        vm.roll(block.number + 1);
+        engine.accrueInterest(MARKET_ID);
+
+        uint256 reserves = engine.getMarketTotalReserves(MARKET_ID);
+        assertTrue(reserves > 0, "reserves should accumulate from interest");
+    }
+
+    function test_irm_withdrawReserves_success() public {
+        _enableIrm();
+        vm.prank(alice);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        vm.roll(block.number + 1);
+        vm.prank(alice);
+        engine.borrow(alice, MARKET_ID, 50 * WAD);
+        vm.warp(block.timestamp + 365 days);
+        vm.roll(block.number + 1);
+        engine.accrueInterest(MARKET_ID);
+
+        uint256 reserves = engine.getMarketTotalReserves(MARKET_ID);
+        assertTrue(reserves > 0);
+
+        address treasury = address(0xBEEF);
+        engine.withdrawReserves(MARKET_ID, reserves, treasury);
+
+        assertEq(engine.getMarketTotalReserves(MARKET_ID), 0);
+        assertEq(debtToken.balanceOf(treasury), reserves);
+    }
+
+    function test_irm_withdrawReserves_insufficientReverts() public {
+        _enableIrm();
+        vm.prank(alice);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        vm.roll(block.number + 1);
+        vm.prank(alice);
+        engine.borrow(alice, MARKET_ID, 50 * WAD);
+        vm.warp(block.timestamp + 365 days);
+        vm.roll(block.number + 1);
+        engine.accrueInterest(MARKET_ID);
+
+        uint256 reserves = engine.getMarketTotalReserves(MARKET_ID);
+        vm.expectRevert(AuraEngine.Aura__InsufficientReserves.selector);
+        engine.withdrawReserves(MARKET_ID, reserves + 1, address(0xBEEF));
+    }
+
+    function test_irm_withdrawReserves_onlyAdmin() public {
+        vm.prank(alice);
+        vm.expectRevert(AuraEngine.Aura__Unauthorized.selector);
+        engine.withdrawReserves(MARKET_ID, 1, address(0xBEEF));
+    }
+
+    function test_irm_noDebt_noInterest() public {
+        _enableIrm();
+        // Deposit but no borrow — no principal debt, so no interest accrues
+        vm.prank(alice);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        vm.warp(block.timestamp + 365 days);
+        vm.roll(block.number + 1);
+        engine.accrueInterest(MARKET_ID);
+        // Index grows (rate is constant baseRate), but reserves = 0 because no debt
+        assertEq(engine.getMarketTotalReserves(MARKET_ID), 0);
+    }
+
+    function test_irm_yieldAndInterestNetEffect() public {
+        // Verify that harvestYield + accrueInterest interact correctly:
+        // interest accrual happens inside harvestYield via _accrueInterest call
+        _enableIrm();
+        vm.prank(alice);
+        engine.depositCollateral(alice, MARKET_ID, 100 * WAD);
+        vm.roll(block.number + 1);
+        vm.prank(alice);
+        engine.borrow(alice, MARKET_ID, 50 * WAD);
+
+        uint256 debtBefore = engine.getPositionDebt(alice, MARKET_ID);
+
+        // Warp 1 year; harvestYield internally calls _accrueInterest
+        vm.warp(block.timestamp + 365 days);
+        vm.roll(block.number + 1);
+
+        // harvestYield will accrue interest then find no vault yield (price unchanged),
+        // so globalDebtScale stays at RAY, but borrowIndex grows
+        engine.harvestYield(MARKET_ID);
+
+        uint256 debtAfter = engine.getPositionDebt(alice, MARKET_ID);
+        assertTrue(debtAfter > debtBefore, "interest should have increased debt");
+        assertTrue(debtAfter <= 60 * WAD, "debt should be bounded by ~10% APR");
+    }
+
+    // ==================== Multi-market: cross-collateral HF ====================
+
     function test_multiMarket_crossCollateralHF() public {
         // Add a second market with a different vault/oracle
         MockERC20     asset2  = new MockERC20("sDAI", "sDAI", 18);

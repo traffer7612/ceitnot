@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import { AuraStorage }     from "./AuraStorage.sol";
-import { FixedPoint }      from "./FixedPoint.sol";
-import { IERC4626 }        from "./interfaces/IERC4626.sol";
-import { IOracleRelay }    from "./interfaces/IOracleRelay.sol";
-import { IMarketRegistry } from "./interfaces/IMarketRegistry.sol";
+import { AuraStorage }        from "./AuraStorage.sol";
+import { FixedPoint }         from "./FixedPoint.sol";
+import { InterestRateModel }  from "./InterestRateModel.sol";
+import { IERC4626 }           from "./interfaces/IERC4626.sol";
+import { IOracleRelay }       from "./interfaces/IOracleRelay.sol";
+import { IMarketRegistry }    from "./interfaces/IMarketRegistry.sol";
 
 /**
  * @title AuraEngine
@@ -40,6 +41,7 @@ contract AuraEngine {
     error Aura__SupplyCapExceeded();
     error Aura__BorrowCapExceeded();
     error Aura__IsolationViolation();
+    error Aura__InsufficientReserves();
 
     // ------------------------------- Events
     event CollateralDeposited(address indexed user, uint256 indexed marketId, uint256 shares);
@@ -48,6 +50,8 @@ contract AuraEngine {
     event Repaid(address indexed user, uint256 indexed marketId, uint256 amount);
     event YieldHarvested(uint256 indexed marketId, uint256 yieldUnderlying, uint256 yieldAppliedToDebt, uint256 newScale);
     event Liquidated(address indexed user, address indexed liquidator, uint256 indexed marketId, uint256 repayAmount, uint256 collateralSeized);
+    event InterestAccrued(uint256 indexed marketId, uint256 interestAccrued, uint256 reservesAccrued, uint256 newBorrowIndex);
+    event ReservesWithdrawn(uint256 indexed marketId, address indexed to, uint256 amount);
     event EngineParamUpdated(string param, uint256 value);
     event MarketParamProposed(uint256 indexed marketId, bytes32 paramId, uint256 value);
     event MarketParamExecuted(uint256 indexed marketId, bytes32 paramId, uint256 value);
@@ -256,6 +260,34 @@ contract AuraEngine {
         emit KeeperSet(keeper, status);
     }
 
+    /**
+     * @notice Accrue interest for a market without other side effects.
+     *         Useful for keepers and accurate state snapshots.
+     * @param marketId Target market
+     */
+    function accrueInterest(uint256 marketId) external nonReentrant {
+        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
+        if (!IMarketRegistry($.marketRegistry).marketExists(marketId)) revert Aura__MarketNotFound();
+        _accrueInterest($, marketId);
+    }
+
+    /**
+     * @notice Withdraw accumulated protocol reserves for a market to a treasury address.
+     * @param marketId Target market
+     * @param amount   Amount of debt token to withdraw (WAD)
+     * @param to       Recipient address
+     */
+    function withdrawReserves(uint256 marketId, uint256 amount, address to) external onlyAdmin {
+        if (amount == 0) revert Aura__ZeroAmount();
+        if (to == address(0)) revert Aura__InvalidParams();
+        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
+        AuraStorage.MarketState storage ms = $.marketStates[marketId];
+        if (ms.totalReserves < amount) revert Aura__InsufficientReserves();
+        unchecked { ms.totalReserves -= amount; }
+        _transferOut($.debtToken, to, amount);
+        emit ReservesWithdrawn(marketId, to, amount);
+    }
+
     // ------------------------------- Core: Deposit / Withdraw
     /**
      * @notice Deposit ERC-4626 vault shares as collateral into a specific market.
@@ -271,6 +303,7 @@ contract AuraEngine {
         if (shares == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
         IMarketRegistry.MarketConfig memory cfg = _requireActiveMarket($.marketRegistry, marketId);
+        _accrueInterest($, marketId);
 
         // Supply cap check
         AuraStorage.MarketState storage ms = $.marketStates[marketId];
@@ -322,6 +355,7 @@ contract AuraEngine {
         if (shares == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
         IMarketRegistry.MarketConfig memory cfg = _getMarketCfg($.marketRegistry, marketId);
+        _accrueInterest($, marketId);
 
         AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
         if (pos.collateralShares < shares) revert Aura__InsufficientCollateral();
@@ -356,6 +390,7 @@ contract AuraEngine {
         if (amount == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
         IMarketRegistry.MarketConfig memory cfg = _requireActiveMarket($.marketRegistry, marketId);
+        _accrueInterest($, marketId);
 
         _settlePosition($, user, marketId);
 
@@ -368,13 +403,13 @@ contract AuraEngine {
 
         // Isolation borrow cap
         if (cfg.isIsolated && cfg.isolatedBorrowCap != 0) {
-            uint256 currentIsolatedDebt = (ms.totalPrincipalDebt * ms.globalDebtScale) / AuraStorage.RAY;
+            uint256 currentIsolatedDebt = (ms.totalPrincipalDebt * _effectiveScale(ms)) / AuraStorage.RAY;
             if (currentIsolatedDebt + amount > cfg.isolatedBorrowCap)
                 revert Aura__BorrowCapExceeded();
         }
 
         pos.principalDebt    += amount;
-        pos.scaleAtLastUpdate = ms.globalDebtScale == 0 ? AuraStorage.RAY : ms.globalDebtScale;
+        pos.scaleAtLastUpdate = _effectiveScale(ms);
         ms.totalPrincipalDebt += amount;
 
         _requireLtv($, user, marketId, cfg);
@@ -397,6 +432,7 @@ contract AuraEngine {
         if (amount == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
         _getMarketCfg($.marketRegistry, marketId); // ensures market exists
+        _accrueInterest($, marketId);
 
         _settlePosition($, user, marketId);
         AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
@@ -425,6 +461,7 @@ contract AuraEngine {
         AuraStorage.MarketState storage ms = $.marketStates[marketId];
 
         if (ms.globalDebtScale == 0) revert Aura__MarketNotFound(); // market never had a deposit
+        _accrueInterest($, marketId);
         if (block.timestamp < ms.lastHarvestTimestamp + $.heartbeat) revert Aura__HeartbeatNotElapsed();
 
         uint256 totalShares = ms.totalCollateralShares;
@@ -451,7 +488,7 @@ contract AuraEngine {
         uint256 yieldDebt = (yieldUnderlying * price) / AuraStorage.WAD;
         if ($.minHarvestYieldDebt != 0 && yieldDebt < $.minHarvestYieldDebt) revert Aura__HarvestTooSmall();
 
-        uint256 totalDebtNow = (ms.totalPrincipalDebt * ms.globalDebtScale) / AuraStorage.RAY;
+        uint256 totalDebtNow = (ms.totalPrincipalDebt * _effectiveScale(ms)) / AuraStorage.RAY;
         if (totalDebtNow == 0) {
             ms.lastHarvestPricePerShare = currentPrice;
             ms.lastHarvestTimestamp     = block.timestamp;
@@ -483,6 +520,7 @@ contract AuraEngine {
         if (repayAmount == 0) revert Aura__ZeroAmount();
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
         IMarketRegistry.MarketConfig memory cfg = _getMarketCfg($.marketRegistry, marketId);
+        _accrueInterest($, marketId);
 
         _settlePosition($, user, marketId);
 
@@ -532,11 +570,11 @@ contract AuraEngine {
         return _healthFactor(AuraStorage.getStorage(), user);
     }
 
-    /// @notice Total effective debt in a market (principal * scale / RAY).
+    /// @notice Total effective debt in a market (principal * effectiveScale / RAY).
     function totalDebt(uint256 marketId) external view returns (uint256) {
         AuraStorage.MarketState storage ms = AuraStorage.getStorage().marketStates[marketId];
         if (ms.globalDebtScale == 0) return 0;
-        return (ms.totalPrincipalDebt * ms.globalDebtScale) / AuraStorage.RAY;
+        return (ms.totalPrincipalDebt * _effectiveScale(ms)) / AuraStorage.RAY;
     }
 
     /// @notice Total collateral in underlying assets for a market.
@@ -573,6 +611,17 @@ contract AuraEngine {
     /// @notice List of market IDs where a user has an active position.
     function getUserMarkets(address user) external view returns (uint256[] memory) {
         return AuraStorage.getStorage().userMarketIds[user];
+    }
+
+    /// @notice Current borrow index for a market (RAY; RAY = uninitialized/no interest).
+    function getMarketBorrowIndex(uint256 marketId) external view returns (uint256) {
+        uint256 idx = AuraStorage.getStorage().marketStates[marketId].borrowIndex;
+        return idx == 0 ? AuraStorage.RAY : idx;
+    }
+
+    /// @notice Total accumulated protocol reserves for a market (WAD).
+    function getMarketTotalReserves(uint256 marketId) external view returns (uint256) {
+        return AuraStorage.getStorage().marketStates[marketId].totalReserves;
     }
 
     // ------------------------------- Internal: market helpers
@@ -653,7 +702,7 @@ contract AuraEngine {
     ) internal {
         AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
         AuraStorage.MarketState    storage ms  = $.marketStates[marketId];
-        uint256 scale   = ms.globalDebtScale == 0 ? AuraStorage.RAY : ms.globalDebtScale;
+        uint256 scale   = _effectiveScale(ms);
         uint256 scaleAt = pos.scaleAtLastUpdate == 0 ? AuraStorage.RAY : pos.scaleAtLastUpdate;
         uint256 oldPrincipal = pos.principalDebt;
         uint256 currentDebt  = FixedPoint.currentDebt(oldPrincipal, scale, scaleAt);
@@ -671,7 +720,7 @@ contract AuraEngine {
         AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
         if (pos.scaleAtLastUpdate == 0 && pos.principalDebt == 0) return 0;
         AuraStorage.MarketState storage ms = $.marketStates[marketId];
-        uint256 scale   = ms.globalDebtScale   == 0 ? AuraStorage.RAY : ms.globalDebtScale;
+        uint256 scale   = _effectiveScale(ms);
         uint256 scaleAt = pos.scaleAtLastUpdate == 0 ? AuraStorage.RAY : pos.scaleAtLastUpdate;
         return FixedPoint.currentDebt(pos.principalDebt, scale, scaleAt);
     }
@@ -726,6 +775,87 @@ contract AuraEngine {
         uint256 assetsPerShare = IERC4626(cfg.vault).convertToAssets(AuraStorage.WAD);
         (uint256 price, ) = IOracleRelay(cfg.oracle).getLatestPrice();
         return (assetsPerShare * price) / AuraStorage.WAD;
+    }
+
+    // ------------------------------- Internal: interest accrual
+
+    /**
+     * @dev Returns the effective combined scale for a market:
+     *      effectiveScale = globalDebtScale * borrowIndex / RAY
+     *      Falls back to RAY if either component is uninitialized (== 0).
+     */
+    function _effectiveScale(
+        AuraStorage.MarketState storage ms
+    ) internal view returns (uint256) {
+        uint256 gds = ms.globalDebtScale == 0 ? AuraStorage.RAY : ms.globalDebtScale;
+        uint256 bi  = ms.borrowIndex     == 0 ? AuraStorage.RAY : ms.borrowIndex;
+        return (gds * bi) / AuraStorage.RAY;
+    }
+
+    /**
+     * @dev Accrue interest for a market up to the current block timestamp.
+     *      Must be called before any state mutation in a market.
+     *      - Initialises borrowIndex / lastAccrualTimestamp on first call.
+     *      - Skips when deltaT == 0 or IRM rates are all zero.
+     */
+    function _accrueInterest(
+        AuraStorage.EngineStorage storage $,
+        uint256 marketId
+    ) internal {
+        AuraStorage.MarketState storage ms = $.marketStates[marketId];
+
+        // Initialise on first touch
+        if (ms.borrowIndex == 0) {
+            ms.borrowIndex          = AuraStorage.RAY;
+            ms.lastAccrualTimestamp = block.timestamp;
+            return;
+        }
+
+        uint256 deltaT = block.timestamp - ms.lastAccrualTimestamp;
+        if (deltaT == 0) return;
+
+        ms.lastAccrualTimestamp = block.timestamp;
+
+        // Read IRM params from registry
+        IMarketRegistry.MarketConfig memory cfg =
+            IMarketRegistry($.marketRegistry).getMarket(marketId);
+
+        // Skip computation if no IRM configured
+        if (cfg.baseRate == 0 && cfg.slope1 == 0 && cfg.slope2 == 0) return;
+
+        uint256 utilization = InterestRateModel.getUtilizationRate(
+            ms.totalPrincipalDebt,
+            cfg.borrowCap
+        );
+        uint256 ratePerSec = InterestRateModel.getBorrowRate(
+            utilization,
+            cfg.baseRate,
+            cfg.slope1,
+            cfg.slope2,
+            cfg.kink
+        );
+        if (ratePerSec == 0) return;
+
+        // borrowIndex grows: newIndex = oldIndex * (1 + rate * deltaT)
+        // Using: newIndex = oldIndex + oldIndex * rate * deltaT / RAY
+        uint256 interestFactor = (ratePerSec * deltaT); // RAY * seconds
+        uint256 indexDelta     = (ms.borrowIndex * interestFactor) / AuraStorage.RAY;
+        uint256 newBorrowIndex = ms.borrowIndex + indexDelta;
+
+        // Compute gross interest on total debt (WAD)
+        uint256 effectiveDebt = (ms.totalPrincipalDebt * ms.borrowIndex) / AuraStorage.RAY;
+        uint256 interestAccrued = (effectiveDebt * interestFactor) / AuraStorage.RAY;
+
+        // Reserve accrual
+        uint256 reservesAccrued;
+        if (cfg.reserveFactorBps > 0 && interestAccrued > 0) {
+            reservesAccrued = (interestAccrued * cfg.reserveFactorBps) / 10_000;
+            ms.totalReserves += reservesAccrued;
+        }
+
+        ms.borrowIndex = newBorrowIndex;
+
+        emit InterestAccrued(marketId, interestAccrued, reservesAccrued, newBorrowIndex);
     }
 
     function _transferIn(address token, address from, uint256 amount) internal {
