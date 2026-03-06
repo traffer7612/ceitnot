@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import { AuraStorage }        from "./AuraStorage.sol";
-import { FixedPoint }         from "./FixedPoint.sol";
-import { InterestRateModel }  from "./InterestRateModel.sol";
-import { IERC4626 }           from "./interfaces/IERC4626.sol";
-import { IOracleRelay }       from "./interfaces/IOracleRelay.sol";
-import { IMarketRegistry }    from "./interfaces/IMarketRegistry.sol";
+import { AuraStorage }            from "./AuraStorage.sol";
+import { FixedPoint }             from "./FixedPoint.sol";
+import { InterestRateModel }      from "./InterestRateModel.sol";
+import { IERC4626 }               from "./interfaces/IERC4626.sol";
+import { IOracleRelay }           from "./interfaces/IOracleRelay.sol";
+import { IMarketRegistry }        from "./interfaces/IMarketRegistry.sol";
+import { IERC3156FlashBorrower }  from "./interfaces/IERC3156FlashBorrower.sol";
+import { IERC3156FlashLender }    from "./interfaces/IERC3156FlashLender.sol";
 
 /**
  * @title AuraEngine
@@ -46,6 +48,10 @@ contract AuraEngine {
     error Aura__AuctionNotStarted();
     error Aura__AuctionAlreadyActive();
     error Aura__InsufficientProtocolCollateral();
+    // ---- Phase 6: Flash Loans
+    error Aura__FlashLoanUnsupportedToken();
+    error Aura__FlashLoanExceedsBalance();
+    error Aura__FlashLoanCallbackFailed();
 
     // ------------------------------- Events
     event CollateralDeposited(address indexed user, uint256 indexed marketId, uint256 shares);
@@ -69,6 +75,10 @@ contract AuraEngine {
     event AdminProposed(address indexed currentAdmin, address indexed pendingAdmin);
     event GuardianSet(address indexed guardian, bool status);
     event KeeperSet(address indexed keeper, bool status);
+    // ---- Phase 6: Flash Loans
+    event FlashLoan(address indexed receiver, address indexed token, uint256 amount, uint256 fee);
+    event FlashLoanFeeUpdated(uint16 feeBps);
+    event FlashLoanReservesWithdrawn(address indexed to, uint256 amount);
 
     /// @notice EIP-1967 UUPS upgrade interface version
     string public constant UPGRADE_INTERFACE_VERSION = "5.0.0";
@@ -756,6 +766,101 @@ contract AuraEngine {
     /// @notice Vault shares accumulated as protocol liquidation fee for a market.
     function getProtocolCollateralReserves(uint256 marketId) external view returns (uint256) {
         return AuraStorage.getStorage().marketStates[marketId].protocolCollateralReserves;
+    }
+
+    // ------------------------------- Phase 6: Flash Loans (EIP-3156)
+
+    /// @notice Set the flash loan fee. Admin only. Max 10_000 bps (100%).
+    function setFlashLoanFee(uint16 feeBps) external onlyAdmin {
+        if (feeBps > 10_000) revert Aura__InvalidParams();
+        AuraStorage.getStorage().flashLoanFeeBps = feeBps;
+        emit FlashLoanFeeUpdated(feeBps);
+    }
+
+    /// @notice Maximum amount available for flash loan of `token`.
+    ///         Returns 0 for any token other than the debt token.
+    function maxFlashLoan(address token) external view returns (uint256) {
+        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
+        if (token != $.debtToken) return 0;
+        (bool ok, bytes memory data) = token.staticcall(
+            abi.encodeWithSelector(0x70a08231, address(this)) // balanceOf(address)
+        );
+        uint256 bal = (ok && data.length >= 32) ? abi.decode(data, (uint256)) : 0;
+        uint256 reserves = $.flashLoanReserves;
+        return bal > reserves ? bal - reserves : 0;
+    }
+
+    /// @notice Fee charged for a flash loan of `amount` of `token`.
+    ///         Reverts for unsupported tokens.
+    function flashFee(address token, uint256 amount) external view returns (uint256) {
+        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
+        if (token != $.debtToken) revert Aura__FlashLoanUnsupportedToken();
+        return (amount * $.flashLoanFeeBps) / 10_000;
+    }
+
+    /// @notice Accumulated flash loan fee reserves (engine-wide).
+    function getFlashLoanReserves() external view returns (uint256) {
+        return AuraStorage.getStorage().flashLoanReserves;
+    }
+
+    /**
+     * @notice EIP-3156 flash loan. Lends `amount` of `token` (must be debtToken) to `receiver`,
+     *         calls `onFlashLoan`, then pulls back `amount + fee`.
+     * @dev    Uses `nonReentrant` — receiver cannot re-enter engine functions during callback.
+     */
+    function flashLoan(
+        IERC3156FlashBorrower receiver,
+        address token,
+        uint256 amount,
+        bytes calldata data
+    ) external whenNotPaused whenNotShutdown nonReentrant returns (bool) {
+        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
+        if (token != $.debtToken)  revert Aura__FlashLoanUnsupportedToken();
+        if (amount == 0)           revert Aura__ZeroAmount();
+
+        // Check available liquidity (exclude already-reserved fees)
+        (bool ok, bytes memory balData) = token.staticcall(
+            abi.encodeWithSelector(0x70a08231, address(this))
+        );
+        uint256 bal = (ok && balData.length >= 32) ? abi.decode(balData, (uint256)) : 0;
+        uint256 available = bal > $.flashLoanReserves ? bal - $.flashLoanReserves : 0;
+        if (amount > available) revert Aura__FlashLoanExceedsBalance();
+
+        uint256 fee = (amount * $.flashLoanFeeBps) / 10_000;
+
+        // 1. Send tokens
+        _transferOut(token, address(receiver), amount);
+
+        // 2. Callback
+        bytes32 result = receiver.onFlashLoan(msg.sender, token, amount, fee, data);
+        if (result != keccak256("ERC3156FlashBorrower.onFlashLoan"))
+            revert Aura__FlashLoanCallbackFailed();
+
+        // 3. Pull back principal + fee
+        _transferIn(token, address(receiver), amount + fee);
+
+        // 4. Accrue fee to reserves
+        if (fee > 0) {
+            unchecked { $.flashLoanReserves += fee; }
+        }
+
+        emit FlashLoan(address(receiver), token, amount, fee);
+        return true;
+    }
+
+    /**
+     * @notice Withdraw accumulated flash loan fee reserves. Admin only.
+     * @param to     Recipient address (e.g. AuraTreasury)
+     * @param amount Amount of debt token to withdraw
+     */
+    function withdrawFlashLoanReserves(address to, uint256 amount) external onlyAdmin {
+        if (to == address(0)) revert Aura__InvalidParams();
+        if (amount == 0)      revert Aura__ZeroAmount();
+        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
+        if (amount > $.flashLoanReserves) revert Aura__InsufficientReserves();
+        unchecked { $.flashLoanReserves -= amount; }
+        _transferOut($.debtToken, to, amount);
+        emit FlashLoanReservesWithdrawn(to, amount);
     }
 
     // ------------------------------- Internal: market helpers

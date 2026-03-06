@@ -91,8 +91,12 @@ library AuraStorage {
         // ---- Reentrancy guard
         uint256 reentrancyStatus; // 1 = NOT_ENTERED, 2 = ENTERED
 
+        // ---- Phase 6: Flash Loans (EIP-3156)
+        uint16  flashLoanFeeBps;   // Fee on flash loans in bps (e.g. 9 = 0.09%); 0 = no fee
+        uint256 flashLoanReserves; // Accumulated flash loan fees (engine-wide)
+
         // ---- Storage gap for future upgrades (each new variable consumes one slot)
-        uint256[50] __gap;
+        uint256[48] __gap;
     }
 
     // ------------------------------------------------------------------ accessor
