@@ -33,7 +33,8 @@ library AuraStorage {
         // ---- Interest accrual (Phase 3)
         uint256 borrowIndex;              // RAY; starts at RAY, grows per-second with interest rate
         uint256 lastAccrualTimestamp;     // seconds; 0 = uninitialized (treated as RAY)
-        uint256 totalReserves;            // WAD; accumulated protocol reserves from interest
+        uint256 totalReserves;            // WAD, accumulated protocol reserves from interest
+        uint256 protocolCollateralReserves; // vault shares withheld as protocol liquidation fee
     }
 
     /// @notice Per-user per-market position.
@@ -42,6 +43,7 @@ library AuraStorage {
         uint256 principalDebt;        // Debt principal at scaleAtLastUpdate (WAD)
         uint256 scaleAtLastUpdate;    // globalDebtScale snapshot when last touched (RAY)
         uint256 lastInteractionBlock; // Flash-loan / same-block protection
+        uint256 auctionStartTime;     // Timestamp when Dutch Auction was initiated (0 = inactive)
     }
 
     /// @notice Global protocol state

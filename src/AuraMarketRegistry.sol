@@ -125,7 +125,12 @@ contract AuraMarketRegistry is IMarketRegistry {
             slope1:                  0,
             slope2:                  0,
             kink:                    0,
-            reserveFactorBps:        0
+            reserveFactorBps:        0,
+            closeFactorBps:              0,
+            fullLiquidationThresholdBps: 0,
+            protocolLiquidationFeeBps:   0,
+            dutchAuctionEnabled:         false,
+            auctionDuration:             0
         });
         _exists[marketId] = true;
         emit MarketAdded(marketId, vault, oracle);
@@ -196,6 +201,28 @@ contract AuraMarketRegistry is IMarketRegistry {
         cfg.slope2           = slope2;
         cfg.kink             = kink;
         cfg.reserveFactorBps = reserveFactorBps;
+        emit MarketRiskParamsUpdated(marketId);
+    }
+
+    /// @notice Update advanced liquidation parameters for a market.
+    function updateMarketLiquidationParams(
+        uint256 marketId,
+        uint16  closeFactorBps,
+        uint16  fullLiquidationThresholdBps,
+        uint16  protocolLiquidationFeeBps,
+        bool    dutchAuctionEnabled,
+        uint256 auctionDuration
+    ) external onlyAdmin {
+        if (!_exists[marketId]) revert Registry__MarketNotFound();
+        if (closeFactorBps > 10_000)              revert Registry__InvalidParams();
+        if (fullLiquidationThresholdBps > 10_000) revert Registry__InvalidParams();
+        if (protocolLiquidationFeeBps > 10_000)   revert Registry__InvalidParams();
+        MarketConfig storage cfg = _markets[marketId];
+        cfg.closeFactorBps              = closeFactorBps;
+        cfg.fullLiquidationThresholdBps = fullLiquidationThresholdBps;
+        cfg.protocolLiquidationFeeBps   = protocolLiquidationFeeBps;
+        cfg.dutchAuctionEnabled         = dutchAuctionEnabled;
+        cfg.auctionDuration             = auctionDuration;
         emit MarketRiskParamsUpdated(marketId);
     }
 

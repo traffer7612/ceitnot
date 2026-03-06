@@ -23,6 +23,12 @@ interface IMarketRegistry {
         uint256 slope2;                 // RAY/sec marginal rate above kink
         uint256 kink;                   // RAY optimal utilization (e.g. 0.8e27)
         uint16  reserveFactorBps;       // Protocol cut of interest accrued (bps, e.g. 1000 = 10%)
+        // ---- Advanced Liquidation (Phase 4)
+        uint16  closeFactorBps;             // Max % of debt repayable in one liquidation (5000=50%); 0=100%
+        uint16  fullLiquidationThresholdBps;// HF below this (bps of WAD, e.g. 5000=0.5) → ignore close factor; 0=off
+        uint16  protocolLiquidationFeeBps;  // % of seized collateral going to protocol reserves; 0=none
+        bool    dutchAuctionEnabled;        // If true, penalty grows linearly from 0 to max over auctionDuration
+        uint256 auctionDuration;            // Seconds from auction start until maxPenalty; 0=instant maxPenalty
     }
 
     /// @notice Fetch configuration for a market. Reverts if market does not exist.
@@ -50,5 +56,15 @@ interface IMarketRegistry {
         uint256 slope2,
         uint256 kink,
         uint16  reserveFactorBps
+    ) external;
+
+    /// @notice Update advanced liquidation parameters for a market.
+    function updateMarketLiquidationParams(
+        uint256 marketId,
+        uint16  closeFactorBps,
+        uint16  fullLiquidationThresholdBps,
+        uint16  protocolLiquidationFeeBps,
+        bool    dutchAuctionEnabled,
+        uint256 auctionDuration
     ) external;
 }

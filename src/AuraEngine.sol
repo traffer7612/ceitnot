@@ -42,6 +42,10 @@ contract AuraEngine {
     error Aura__BorrowCapExceeded();
     error Aura__IsolationViolation();
     error Aura__InsufficientReserves();
+    error Aura__CloseFactorExceeded();
+    error Aura__AuctionNotStarted();
+    error Aura__AuctionAlreadyActive();
+    error Aura__InsufficientProtocolCollateral();
 
     // ------------------------------- Events
     event CollateralDeposited(address indexed user, uint256 indexed marketId, uint256 shares);
@@ -52,6 +56,9 @@ contract AuraEngine {
     event Liquidated(address indexed user, address indexed liquidator, uint256 indexed marketId, uint256 repayAmount, uint256 collateralSeized);
     event InterestAccrued(uint256 indexed marketId, uint256 interestAccrued, uint256 reservesAccrued, uint256 newBorrowIndex);
     event ReservesWithdrawn(uint256 indexed marketId, address indexed to, uint256 amount);
+    event LiquidationInitiated(address indexed user, uint256 indexed marketId, uint256 timestamp);
+    event BadDebtRealized(address indexed user, uint256 indexed marketId, uint256 badDebtAmount);
+    event ProtocolCollateralWithdrawn(uint256 indexed marketId, address indexed to, uint256 shares);
     event EngineParamUpdated(string param, uint256 value);
     event MarketParamProposed(uint256 indexed marketId, bytes32 paramId, uint256 value);
     event MarketParamExecuted(uint256 indexed marketId, bytes32 paramId, uint256 value);
@@ -258,6 +265,53 @@ contract AuraEngine {
     function setKeeper(address keeper, bool status) external onlyAdmin {
         AuraStorage.getStorage().keepers[keeper] = status;
         emit KeeperSet(keeper, status);
+    }
+
+    /**
+     * @notice Initiate a Dutch Auction liquidation for an unhealthy position.
+     *         Must be called before `liquidate` when `dutchAuctionEnabled` is true.
+     *         Anyone can call; sets the auction start timestamp.
+     * @param user     Position owner
+     * @param marketId Market with the unhealthy position
+     */
+    function initiateLiquidation(
+        address user,
+        uint256 marketId
+    ) external whenNotPaused whenNotShutdown nonReentrant {
+        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
+        _getMarketCfg($.marketRegistry, marketId); // validate market
+        _accrueInterest($, marketId);
+        _settlePosition($, user, marketId);
+
+        if (_healthFactor($, user) >= AuraStorage.WAD) revert Aura__HealthFactorAboveOne();
+
+        AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
+        if (pos.auctionStartTime != 0) revert Aura__AuctionAlreadyActive();
+        pos.auctionStartTime = block.timestamp;
+        emit LiquidationInitiated(user, marketId, block.timestamp);
+    }
+
+    /**
+     * @notice Withdraw vault shares accumulated as protocol liquidation fees.
+     * @param marketId Source market
+     * @param shares   Amount of vault shares to withdraw
+     * @param to       Recipient address
+     */
+    function withdrawProtocolCollateral(
+        uint256 marketId,
+        uint256 shares,
+        address to
+    ) external onlyAdmin {
+        if (shares == 0) revert Aura__ZeroAmount();
+        if (to == address(0)) revert Aura__InvalidParams();
+        AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
+        IMarketRegistry.MarketConfig memory cfg = _getMarketCfg($.marketRegistry, marketId);
+        AuraStorage.MarketState storage ms = $.marketStates[marketId];
+        if (ms.protocolCollateralReserves < shares) revert Aura__InsufficientProtocolCollateral();
+        unchecked { ms.protocolCollateralReserves -= shares; }
+        bool ok = IERC4626(cfg.vault).transfer(to, shares);
+        if (!ok) revert Aura__InvalidParams();
+        emit ProtocolCollateralWithdrawn(marketId, to, shares);
     }
 
     /**
@@ -507,10 +561,10 @@ contract AuraEngine {
     // ------------------------------- Liquidation
     /**
      * @notice Liquidate an unhealthy position in a specific market.
-     *         Repay debt on behalf of user; receive their collateral with a bonus.
+     *         Integrates close factor, Dutch auction, protocol fee, and bad debt socialization.
      * @param user        Unhealthy position owner
      * @param marketId    Market to liquidate in
-     * @param repayAmount Amount of debt to repay
+     * @param repayAmount Amount of debt to repay (capped by close factor unless HF < fullLiquidationThreshold)
      */
     function liquidate(
         address user,
@@ -521,37 +575,91 @@ contract AuraEngine {
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
         IMarketRegistry.MarketConfig memory cfg = _getMarketCfg($.marketRegistry, marketId);
         _accrueInterest($, marketId);
-
         _settlePosition($, user, marketId);
 
-        // Cross-collateral HF must be < 1 to allow liquidation
-        if (_healthFactor($, user) >= AuraStorage.WAD) revert Aura__HealthFactorAboveOne();
+        // HF check
+        uint256 hf = _healthFactor($, user);
+        if (hf >= AuraStorage.WAD) revert Aura__HealthFactorAboveOne();
 
         AuraStorage.MarketPosition storage pos = $.positions[user][marketId];
         AuraStorage.MarketState    storage ms  = $.marketStates[marketId];
 
         uint256 debt = _currentDebtInMarket($, user, marketId);
+
+        // ---- 4.1 Close Factor
+        if (cfg.closeFactorBps > 0) {
+            bool fullLiqAllowed = cfg.fullLiquidationThresholdBps > 0
+                && hf < (uint256(cfg.fullLiquidationThresholdBps) * AuraStorage.WAD / 10_000);
+            if (!fullLiqAllowed) {
+                uint256 maxRepay = (debt * cfg.closeFactorBps) / 10_000;
+                if (repayAmount > maxRepay) revert Aura__CloseFactorExceeded();
+            }
+        }
         if (repayAmount > debt) repayAmount = debt;
 
         uint256 valuePerShare = _collateralValuePerShare(cfg);
         if (valuePerShare == 0) revert Aura__InvalidParams();
 
-        uint256 collateralToSeize = (repayAmount * (10_000 + cfg.liquidationPenaltyBps) * AuraStorage.WAD)
+        // ---- 4.2 Dutch Auction penalty
+        uint256 effectivePenaltyBps;
+        if (cfg.dutchAuctionEnabled) {
+            if (pos.auctionStartTime == 0) revert Aura__AuctionNotStarted();
+            uint256 elapsed = block.timestamp - pos.auctionStartTime;
+            if (cfg.auctionDuration == 0 || elapsed >= cfg.auctionDuration) {
+                effectivePenaltyBps = cfg.liquidationPenaltyBps;
+            } else {
+                effectivePenaltyBps = (elapsed * cfg.liquidationPenaltyBps) / cfg.auctionDuration;
+            }
+        } else {
+            effectivePenaltyBps = cfg.liquidationPenaltyBps;
+        }
+
+        uint256 collateralToSeize = (repayAmount * (10_000 + effectivePenaltyBps) * AuraStorage.WAD)
             / (10_000 * valuePerShare);
         if (collateralToSeize > pos.collateralShares) collateralToSeize = pos.collateralShares;
 
+        // ---- 4.3 Protocol Liquidation Fee
+        uint256 protocolFeeShares;
+        if (cfg.protocolLiquidationFeeBps > 0 && collateralToSeize > 0) {
+            protocolFeeShares = (collateralToSeize * cfg.protocolLiquidationFeeBps) / 10_000;
+            ms.protocolCollateralReserves += protocolFeeShares;
+        }
+        uint256 liquidatorShares = collateralToSeize - protocolFeeShares;
+
+        // Update state
         unchecked {
             pos.principalDebt        -= repayAmount;
             pos.collateralShares      -= collateralToSeize;
             ms.totalPrincipalDebt    -= repayAmount;
             ms.totalCollateralShares -= collateralToSeize;
         }
+
+        // Reset auction if position closed
+        if (pos.collateralShares == 0 && pos.principalDebt == 0) {
+            pos.auctionStartTime = 0;
+        }
+
+        // ---- 4.4 Bad Debt Socialization
+        if (pos.collateralShares == 0 && pos.principalDebt > 0) {
+            uint256 badDebt = pos.principalDebt;
+            uint256 covered = badDebt <= ms.totalReserves ? badDebt : ms.totalReserves;
+            unchecked {
+                ms.totalReserves     -= covered;
+                ms.totalPrincipalDebt = ms.totalPrincipalDebt > badDebt
+                    ? ms.totalPrincipalDebt - badDebt : 0;
+                pos.principalDebt = 0;
+            }
+            emit BadDebtRealized(user, marketId, badDebt);
+        }
+
         _tryExitMarket($, user, marketId);
 
         _transferIn($.debtToken, msg.sender, repayAmount);
-        bool ok = IERC4626(cfg.vault).transfer(msg.sender, collateralToSeize);
-        if (!ok) revert Aura__InvalidParams();
-        emit Liquidated(user, msg.sender, marketId, repayAmount, collateralToSeize);
+        if (liquidatorShares > 0) {
+            bool ok = IERC4626(cfg.vault).transfer(msg.sender, liquidatorShares);
+            if (!ok) revert Aura__InvalidParams();
+        }
+        emit Liquidated(user, msg.sender, marketId, repayAmount, liquidatorShares);
     }
 
     // ------------------------------- View
@@ -622,6 +730,11 @@ contract AuraEngine {
     /// @notice Total accumulated protocol reserves for a market (WAD).
     function getMarketTotalReserves(uint256 marketId) external view returns (uint256) {
         return AuraStorage.getStorage().marketStates[marketId].totalReserves;
+    }
+
+    /// @notice Vault shares accumulated as protocol liquidation fee for a market.
+    function getProtocolCollateralReserves(uint256 marketId) external view returns (uint256) {
+        return AuraStorage.getStorage().marketStates[marketId].protocolCollateralReserves;
     }
 
     // ------------------------------- Internal: market helpers
