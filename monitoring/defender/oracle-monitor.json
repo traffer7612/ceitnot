@@ -1,0 +1,44 @@
+{
+  "_comment": "OpenZeppelin Defender v2 — Monitor template for OracleRelayV2 price deviation.",
+  "_setup": "Replace ${ORACLE_RELAY_V2_ADDRESS} with your deployed OracleRelayV2 address.",
+  "name": "Aura: Oracle Price Deviation",
+  "type": "BLOCK",
+  "network": "arbitrum",
+  "paused": false,
+  "addresses": ["${ORACLE_RELAY_V2_ADDRESS}"],
+  "abi": [
+    {
+      "anonymous": false,
+      "inputs": [
+        { "indexed": false, "name": "lastPrice",    "type": "uint256" },
+        { "indexed": false, "name": "newPrice",     "type": "uint256" },
+        { "indexed": false, "name": "deviationBps", "type": "uint256" }
+      ],
+      "name": "PriceDeviationBreached",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        { "indexed": true,  "name": "admin",             "type": "address" },
+        { "indexed": false, "name": "newBaselinePrice",  "type": "uint256" }
+      ],
+      "name": "CircuitBreakerReset",
+      "type": "event"
+    }
+  ],
+  "eventConditions": [
+    { "eventSignature": "PriceDeviationBreached(uint256,uint256,uint256)" },
+    { "eventSignature": "CircuitBreakerReset(address,uint256)" }
+  ],
+  "alertThreshold": {
+    "amount": 1,
+    "windowSeconds": 60
+  },
+  "notifyConfig": {
+    "timeoutMs": 0,
+    "messageSubject": "[AURA CRITICAL] Oracle Circuit Breaker Tripped",
+    "message": "OracleRelayV2 circuit breaker was triggered or reset.\n\nTransaction: {{transaction.hash}}\nBlock: {{transaction.blockNumber}}\n\nIMPORTANT: While the circuit breaker is active, getLatestPrice() reverts and\nnew borrows/liquidations are blocked. The multisig admin must investigate and\ncall resetCircuitBreaker() after confirming the price is valid.",
+    "channels": ["${DEFENDER_NOTIFICATION_CHANNEL_ID}"]
+  }
+}

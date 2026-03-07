@@ -1,0 +1,8 @@
+[
+  { "label": "marketCount",  "slot": "0", "offset": 0 },
+  { "label": "_markets",     "slot": "1", "offset": 0 },
+  { "label": "_exists",      "slot": "2", "offset": 0 },
+  { "label": "admin",        "slot": "3", "offset": 0 },
+  { "label": "pendingAdmin", "slot": "4", "offset": 0 },
+  { "label": "engine",       "slot": "5", "offset": 0 }
+]

@@ -1,0 +1,52 @@
+{
+  "_comment": "OpenZeppelin Defender v2 — Monitor template for large liquidations.",
+  "_setup": "Import via Defender Dashboard > Monitors > Create Monitor, or POST to https://defender.openzeppelin.com/v2/monitor",
+  "name": "Aura: Large Liquidation",
+  "type": "BLOCK",
+  "network": "arbitrum",
+  "paused": false,
+  "addresses": ["${ENGINE_PROXY_ADDRESS}"],
+  "abi": [
+    {
+      "anonymous": false,
+      "inputs": [
+        { "indexed": true,  "name": "user",           "type": "address" },
+        { "indexed": true,  "name": "liquidator",     "type": "address" },
+        { "indexed": true,  "name": "marketId",       "type": "uint256" },
+        { "indexed": false, "name": "repayAmount",    "type": "uint256" },
+        { "indexed": false, "name": "collateralSeized","type": "uint256" }
+      ],
+      "name": "Liquidated",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        { "indexed": true,  "name": "user",       "type": "address" },
+        { "indexed": true,  "name": "marketId",   "type": "uint256" },
+        { "indexed": false, "name": "badDebtAmount", "type": "uint256" }
+      ],
+      "name": "BadDebtRealized",
+      "type": "event"
+    }
+  ],
+  "eventConditions": [
+    {
+      "eventSignature": "Liquidated(address,address,uint256,uint256,uint256)",
+      "expression": "repayAmount >= 10000000000000000000000"
+    },
+    {
+      "eventSignature": "BadDebtRealized(address,uint256,uint256)"
+    }
+  ],
+  "alertThreshold": {
+    "amount": 1,
+    "windowSeconds": 3600
+  },
+  "notifyConfig": {
+    "timeoutMs": 0,
+    "messageSubject": "[AURA ALERT] Large Liquidation / Bad Debt",
+    "message": "A large liquidation or bad debt event was detected on AuraEngine.\n\nTransaction: {{transaction.hash}}\nFrom: {{transaction.from}}\nBlock: {{transaction.blockNumber}}\n\nCheck the Aura dashboard and assess protocol health.",
+    "channels": ["${DEFENDER_NOTIFICATION_CHANNEL_ID}"]
+  }
+}

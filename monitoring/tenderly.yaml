@@ -1,0 +1,115 @@
+# Aura Protocol — Tenderly Alert Configuration
+# -----------------------------------------------
+# Reference config for setting up Tenderly Alerts via the Tenderly Dashboard
+# or the Tenderly CLI (tenderly alerts create).
+#
+# Required substitutions (replace before importing):
+#   ${ENGINE_PROXY_ADDRESS}     - AuraEngine proxy address
+#   ${ORACLE_RELAY_V2_ADDRESS}  - OracleRelayV2 address
+#   ${ALERT_WEBHOOK_URL}        - Your alert webhook endpoint
+#
+# Network ID for Arbitrum One: 42161
+# Tenderly CLI setup: https://docs.tenderly.co/monitoring/alerts
+
+version: "1"
+project:
+  name: "aura-protocol"
+  slug: "aura-protocol"  # update to match your Tenderly project slug
+
+alerts:
+
+  # ─── 1. Large Liquidation ───────────────────────────────────────────────────
+  - name: "Aura: Large Liquidation"
+    description: "Fires whenever a Liquidated event is emitted on AuraEngine."
+    enabled: true
+    network_id: "42161"
+    contract_address: "${ENGINE_PROXY_ADDRESS}"
+    trigger:
+      type: "contract_event"
+      event_signature: "Liquidated(address,address,uint256,uint256,uint256)"
+    destinations:
+      - type: "webhook"
+        webhook_url: "${ALERT_WEBHOOK_URL}"
+    notification:
+      title: "[AURA] Large Liquidation"
+      message: "Liquidation detected: user={{0}}, liquidator={{1}}, marketId={{2}}, repayAmount={{3}}, collateralSeized={{4}}"
+
+  # ─── 2. Bad Debt Realized ───────────────────────────────────────────────────
+  - name: "Aura: Bad Debt Realized"
+    description: "Fires when a position cannot be fully covered (bad debt written off)."
+    enabled: true
+    network_id: "42161"
+    contract_address: "${ENGINE_PROXY_ADDRESS}"
+    trigger:
+      type: "contract_event"
+      event_signature: "BadDebtRealized(address,uint256,uint256)"
+    destinations:
+      - type: "webhook"
+        webhook_url: "${ALERT_WEBHOOK_URL}"
+    notification:
+      title: "[AURA CRITICAL] Bad Debt Realized"
+      message: "Bad debt written off: user={{0}}, marketId={{1}}, amount={{2}}"
+
+  # ─── 3. Oracle Circuit Breaker ───────────────────────────────────────────────
+  - name: "Aura: Oracle Price Deviation"
+    description: "Fires when the oracle circuit breaker trips or resets."
+    enabled: true
+    network_id: "42161"
+    contract_address: "${ORACLE_RELAY_V2_ADDRESS}"
+    trigger:
+      type: "contract_event"
+      event_signature: "PriceDeviationBreached(uint256,uint256,uint256)"
+    destinations:
+      - type: "webhook"
+        webhook_url: "${ALERT_WEBHOOK_URL}"
+    notification:
+      title: "[AURA CRITICAL] Oracle Circuit Breaker Tripped"
+      message: "Price deviation exceeded threshold: lastPrice={{0}}, newPrice={{1}}, deviationBps={{2}}"
+
+  # ─── 4. Protocol Paused ──────────────────────────────────────────────────────
+  - name: "Aura: Protocol Paused"
+    description: "Fires whenever pause state changes on AuraEngine."
+    enabled: true
+    network_id: "42161"
+    contract_address: "${ENGINE_PROXY_ADDRESS}"
+    trigger:
+      type: "contract_event"
+      event_signature: "PausedSet(bool)"
+    destinations:
+      - type: "webhook"
+        webhook_url: "${ALERT_WEBHOOK_URL}"
+    notification:
+      title: "[AURA] Pause State Changed"
+      message: "AuraEngine paused state set to: {{0}}"
+
+  # ─── 5. Emergency Shutdown ───────────────────────────────────────────────────
+  - name: "Aura: Emergency Shutdown"
+    description: "Fires whenever emergency shutdown state changes."
+    enabled: true
+    network_id: "42161"
+    contract_address: "${ENGINE_PROXY_ADDRESS}"
+    trigger:
+      type: "contract_event"
+      event_signature: "EmergencyShutdownSet(bool)"
+    destinations:
+      - type: "webhook"
+        webhook_url: "${ALERT_WEBHOOK_URL}"
+    notification:
+      title: "[AURA CRITICAL] Emergency Shutdown State Changed"
+      message: "AuraEngine emergency shutdown set to: {{0}}"
+
+  # ─── 6. Admin Transfer ───────────────────────────────────────────────────────
+  - name: "Aura: Admin Transferred"
+    description: "Fires whenever the admin role is transferred on AuraEngine or registry."
+    enabled: true
+    network_id: "42161"
+    contract_address: "${ENGINE_PROXY_ADDRESS}"
+    trigger:
+      type: "contract_event"
+      event_signature: "AdminTransferred(address,address)"
+    destinations:
+      - type: "webhook"
+        webhook_url: "${ALERT_WEBHOOK_URL}"
+    notification:
+      title: "[AURA WARNING] Admin Transferred"
+      message: "AuraEngine admin changed from {{0}} to {{1}}. Verify this is authorised."

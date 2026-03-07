@@ -1,0 +1,57 @@
+{
+  "_comment": "OpenZeppelin Defender v2 — Monitor template for protocol pause and emergency events.",
+  "_setup": "Replace ${ENGINE_PROXY_ADDRESS} with your deployed AuraEngine proxy address.",
+  "name": "Aura: Pause / Emergency Shutdown",
+  "type": "BLOCK",
+  "network": "arbitrum",
+  "paused": false,
+  "addresses": ["${ENGINE_PROXY_ADDRESS}"],
+  "abi": [
+    {
+      "anonymous": false,
+      "inputs": [{ "indexed": false, "name": "status", "type": "bool" }],
+      "name": "PausedSet",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [{ "indexed": false, "name": "status", "type": "bool" }],
+      "name": "EmergencyShutdownSet",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        { "indexed": true,  "name": "previousAdmin", "type": "address" },
+        { "indexed": true,  "name": "newAdmin",      "type": "address" }
+      ],
+      "name": "AdminTransferred",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        { "indexed": true,  "name": "currentAdmin", "type": "address" },
+        { "indexed": true,  "name": "pendingAdmin", "type": "address" }
+      ],
+      "name": "AdminProposed",
+      "type": "event"
+    }
+  ],
+  "eventConditions": [
+    { "eventSignature": "PausedSet(bool)" },
+    { "eventSignature": "EmergencyShutdownSet(bool)" },
+    { "eventSignature": "AdminTransferred(address,address)" },
+    { "eventSignature": "AdminProposed(address,address)" }
+  ],
+  "alertThreshold": {
+    "amount": 1,
+    "windowSeconds": 60
+  },
+  "notifyConfig": {
+    "timeoutMs": 0,
+    "messageSubject": "[AURA CRITICAL] Protocol State Change",
+    "message": "A critical state change occurred on AuraEngine (pause / emergency shutdown / admin transfer).\n\nTransaction: {{transaction.hash}}\nFrom: {{transaction.from}}\nBlock: {{transaction.blockNumber}}\n\nVerify this was an authorised action by the Gnosis Safe or a guardian.",
+    "channels": ["${DEFENDER_NOTIFICATION_CHANNEL_ID}"]
+  }
+}

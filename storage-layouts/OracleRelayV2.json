@@ -1,0 +1,9 @@
+[
+  { "label": "_feeds",               "slot": "0", "offset": 0 },
+  { "label": "maxDeviationBps",      "slot": "1", "offset": 0 },
+  { "label": "lastPrice",            "slot": "2", "offset": 0 },
+  { "label": "circuitBroken",        "slot": "3", "offset": 0 },
+  { "label": "sequencerFeed",        "slot": "3", "offset": 1 },
+  { "label": "sequencerGracePeriod", "slot": "4", "offset": 0 },
+  { "label": "admin",                "slot": "5", "offset": 0 }
+]
