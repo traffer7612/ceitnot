@@ -9,6 +9,7 @@ import { IOracleRelay }           from "./interfaces/IOracleRelay.sol";
 import { IMarketRegistry }        from "./interfaces/IMarketRegistry.sol";
 import { IERC3156FlashBorrower }  from "./interfaces/IERC3156FlashBorrower.sol";
 import { IERC3156FlashLender }    from "./interfaces/IERC3156FlashLender.sol";
+import { IAuraUSD }               from "./interfaces/IAuraUSD.sol";
 
 /**
  * @title AuraEngine
@@ -52,6 +53,8 @@ contract AuraEngine {
     error Aura__FlashLoanUnsupportedToken();
     error Aura__FlashLoanExceedsBalance();
     error Aura__FlashLoanCallbackFailed();
+    // ---- Phase 9: CDP
+    error Aura__DebtCeilingExceeded();
 
     // ------------------------------- Events
     event CollateralDeposited(address indexed user, uint256 indexed marketId, uint256 shares);
@@ -79,6 +82,8 @@ contract AuraEngine {
     event FlashLoan(address indexed receiver, address indexed token, uint256 amount, uint256 fee);
     event FlashLoanFeeUpdated(uint16 feeBps);
     event FlashLoanReservesWithdrawn(address indexed to, uint256 amount);
+    // ---- Phase 9: CDP
+    event MintableDebtTokenSet(bool enabled);
 
     /// @notice EIP-1967 UUPS upgrade interface version
     string public constant UPGRADE_INTERFACE_VERSION = "5.0.0";
@@ -276,6 +281,19 @@ contract AuraEngine {
     function setKeeper(address keeper, bool status) external onlyAdmin {
         AuraStorage.getStorage().keepers[keeper] = status;
         emit KeeperSet(keeper, status);
+    }
+
+    // ---- Phase 9: CDP mode
+    /**
+     * @notice Enable or disable CDP mint/burn mode for the debt token.
+     *         When enabled: `borrow` mints aUSD directly to the user (no pre-funded balance needed);
+     *                       `repay` and `liquidate` burn aUSD from the user (user must approve first).
+     *         When disabled (default): legacy transfer-based behaviour — engine must hold debtToken.
+     * @param enabled True to enable CDP mode; false to revert to transfer mode.
+     */
+    function setMintableDebtToken(bool enabled) external onlyAdmin {
+        AuraStorage.getStorage().mintableDebtToken = enabled;
+        emit MintableDebtTokenSet(enabled);
     }
 
     /**
@@ -489,8 +507,14 @@ contract AuraEngine {
             emit OriginationFeeCharged(user, marketId, originationFee);
         }
 
+        // ---- Phase 9: per-market debt ceiling (CDP mode only)
+        // Note: ms.totalPrincipalDebt already includes totalDebtAdded (updated above).
+        if ($.mintableDebtToken && cfg.debtCeiling != 0 &&
+                ms.totalPrincipalDebt > cfg.debtCeiling)
+            revert Aura__DebtCeilingExceeded();
+
         _requireLtv($, user, marketId, cfg);
-        _transferOut($.debtToken, user, amount);
+        _lendDebtToken($, user, amount);
         emit Borrowed(user, marketId, amount);
     }
 
@@ -520,7 +544,7 @@ contract AuraEngine {
             $.marketStates[marketId].totalPrincipalDebt -= amount;
         }
         _tryExitMarket($, user, marketId);
-        _transferIn($.debtToken, msg.sender, amount);
+        _recoverDebtToken($, msg.sender, amount);
         emit Repaid(user, marketId, amount);
     }
 
@@ -685,7 +709,7 @@ contract AuraEngine {
 
         _tryExitMarket($, user, marketId);
 
-        _transferIn($.debtToken, msg.sender, repayAmount);
+        _recoverDebtToken($, msg.sender, repayAmount);
         if (liquidatorShares > 0) {
             bool ok = IERC4626(cfg.vault).transfer(msg.sender, liquidatorShares);
             if (!ok) revert Aura__InvalidParams();
@@ -779,9 +803,16 @@ contract AuraEngine {
 
     /// @notice Maximum amount available for flash loan of `token`.
     ///         Returns 0 for any token other than the debt token.
+    ///         In CDP mode: headroom under the global debt ceiling (unlimited if no ceiling).
     function maxFlashLoan(address token) external view returns (uint256) {
         AuraStorage.EngineStorage storage $ = AuraStorage.getStorage();
         if (token != $.debtToken) return 0;
+        if ($.mintableDebtToken) {
+            uint256 ceiling_ = IAuraUSD($.debtToken).globalDebtCeiling();
+            if (ceiling_ == 0) return type(uint256).max;
+            uint256 supply   = IAuraUSD($.debtToken).totalSupply();
+            return supply >= ceiling_ ? 0 : ceiling_ - supply;
+        }
         (bool ok, bytes memory data) = token.staticcall(
             abi.encodeWithSelector(0x70a08231, address(this)) // balanceOf(address)
         );
@@ -818,26 +849,35 @@ contract AuraEngine {
         if (token != $.debtToken)  revert Aura__FlashLoanUnsupportedToken();
         if (amount == 0)           revert Aura__ZeroAmount();
 
-        // Check available liquidity (exclude already-reserved fees)
-        (bool ok, bytes memory balData) = token.staticcall(
-            abi.encodeWithSelector(0x70a08231, address(this))
-        );
-        uint256 bal = (ok && balData.length >= 32) ? abi.decode(balData, (uint256)) : 0;
-        uint256 available = bal > $.flashLoanReserves ? bal - $.flashLoanReserves : 0;
-        if (amount > available) revert Aura__FlashLoanExceedsBalance();
+        // Check available liquidity
+        if ($.mintableDebtToken) {
+            // CDP mode: AuraUSD.mint enforces global debt ceiling; no pre-funded balance needed.
+            uint256 ceiling_ = IAuraUSD(token).globalDebtCeiling();
+            if (ceiling_ != 0) {
+                uint256 supply = IAuraUSD(token).totalSupply();
+                if (supply + amount > ceiling_) revert Aura__FlashLoanExceedsBalance();
+            }
+        } else {
+            (bool ok, bytes memory balData) = token.staticcall(
+                abi.encodeWithSelector(0x70a08231, address(this))
+            );
+            uint256 bal = (ok && balData.length >= 32) ? abi.decode(balData, (uint256)) : 0;
+            uint256 available = bal > $.flashLoanReserves ? bal - $.flashLoanReserves : 0;
+            if (amount > available) revert Aura__FlashLoanExceedsBalance();
+        }
 
         uint256 fee = (amount * $.flashLoanFeeBps) / 10_000;
 
-        // 1. Send tokens
-        _transferOut(token, address(receiver), amount);
+        // 1. Send (or mint) tokens
+        _lendDebtToken($, address(receiver), amount);
 
         // 2. Callback
         bytes32 result = receiver.onFlashLoan(msg.sender, token, amount, fee, data);
         if (result != keccak256("ERC3156FlashBorrower.onFlashLoan"))
             revert Aura__FlashLoanCallbackFailed();
 
-        // 3. Pull back principal + fee
-        _transferIn(token, address(receiver), amount + fee);
+        // 3. Pull back (or burn) principal + fee
+        _recoverDebtToken($, address(receiver), amount + fee);
 
         // 4. Accrue fee to reserves
         if (fee > 0) {
@@ -1105,5 +1145,41 @@ contract AuraEngine {
     function _transferOut(address token, address to, uint256 amount) internal {
         (bool ok, bytes memory ret) = token.call(abi.encodeWithSelector(0xa9059cbb, to, amount));
         if (!ok || (ret.length != 0 && !abi.decode(ret, (bool)))) revert Aura__InvalidParams();
+    }
+
+    // ------------------------------- Phase 9: CDP helpers
+
+    /**
+     * @dev Lend `amount` of debtToken to `to`.
+     *      CDP mode  → mint aUSD directly to recipient.
+     *      Legacy mode → ERC-20 transfer from engine balance.
+     */
+    function _lendDebtToken(
+        AuraStorage.EngineStorage storage $,
+        address to,
+        uint256 amount
+    ) internal {
+        if ($.mintableDebtToken) {
+            IAuraUSD($.debtToken).mint(to, amount);
+        } else {
+            _transferOut($.debtToken, to, amount);
+        }
+    }
+
+    /**
+     * @dev Recover `amount` of debtToken from `from`.
+     *      CDP mode  → burnFrom (requires prior approve from `from` to this contract).
+     *      Legacy mode → transferFrom into engine balance.
+     */
+    function _recoverDebtToken(
+        AuraStorage.EngineStorage storage $,
+        address from,
+        uint256 amount
+    ) internal {
+        if ($.mintableDebtToken) {
+            IAuraUSD($.debtToken).burnFrom(from, amount);
+        } else {
+            _transferIn($.debtToken, from, amount);
+        }
     }
 }

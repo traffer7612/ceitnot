@@ -32,6 +32,8 @@ interface IMarketRegistry {
         // ---- Fee Params (Phase 5)
         uint16  yieldFeeBps;                // % of harvested yield going to protocol reserves (e.g. 1000=10%); 0=none
         uint16  originationFeeBps;          // One-time fee on borrow added to principal (e.g. 10=0.1%); 0=none
+        // ---- Debt Ceiling (Phase 9)
+        uint256 debtCeiling;                // Max aUSD mintable from this market (0 = unlimited)
     }
 
     /// @notice Fetch configuration for a market. Reverts if market does not exist.

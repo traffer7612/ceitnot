@@ -95,8 +95,11 @@ library AuraStorage {
         uint16  flashLoanFeeBps;   // Fee on flash loans in bps (e.g. 9 = 0.09%); 0 = no fee
         uint256 flashLoanReserves; // Accumulated flash loan fees (engine-wide)
 
+        // ---- Phase 9: CDP mode
+        bool mintableDebtToken; // If true: borrow mints aUSD, repay/liquidate burns aUSD
+
         // ---- Storage gap for future upgrades (each new variable consumes one slot)
-        uint256[48] __gap;
+        uint256[47] __gap;
     }
 
     // ------------------------------------------------------------------ accessor

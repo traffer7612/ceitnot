@@ -132,7 +132,8 @@ contract AuraMarketRegistry is IMarketRegistry {
             dutchAuctionEnabled:         false,
             auctionDuration:             0,
             yieldFeeBps:                 0,
-            originationFeeBps:           0
+            originationFeeBps:           0,
+            debtCeiling:                 0
         });
         _exists[marketId] = true;
         emit MarketAdded(marketId, vault, oracle);
@@ -225,6 +226,14 @@ contract AuraMarketRegistry is IMarketRegistry {
         cfg.protocolLiquidationFeeBps   = protocolLiquidationFeeBps;
         cfg.dutchAuctionEnabled         = dutchAuctionEnabled;
         cfg.auctionDuration             = auctionDuration;
+        emit MarketRiskParamsUpdated(marketId);
+    }
+
+    /// @notice Update the per-market debt ceiling (max aUSD mintable from this market in CDP mode).
+    ///         0 = unlimited.
+    function updateMarketDebtCeiling(uint256 marketId, uint256 debtCeiling) external onlyAdmin {
+        if (!_exists[marketId]) revert Registry__MarketNotFound();
+        _markets[marketId].debtCeiling = debtCeiling;
         emit MarketRiskParamsUpdated(marketId);
     }
 
