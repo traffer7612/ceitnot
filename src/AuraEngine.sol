@@ -778,6 +778,25 @@ contract AuraEngine is Multicall {
         return AuraStorage.getStorage().marketStates[marketId].protocolCollateralReserves;
     }
 
+    /// @notice Raw total collateral shares deposited into a market (WAD).
+    ///         Equals the sum of all user `collateralShares` for this market.
+    function getMarketTotalCollateralShares(uint256 marketId) external view returns (uint256) {
+        return AuraStorage.getStorage().marketStates[marketId].totalCollateralShares;
+    }
+
+    /// @notice Raw total principal debt in a market (WAD, before scale adjustment).
+    ///         Use `totalDebt(marketId)` for the effective (scaled) value.
+    function getMarketTotalPrincipalDebt(uint256 marketId) external view returns (uint256) {
+        return AuraStorage.getStorage().marketStates[marketId].totalPrincipalDebt;
+    }
+
+    /// @notice Current global debt scale for a market (RAY). Starts at RAY and decreases
+    ///         as yield is harvested. Returns RAY when the market has had no interactions.
+    function getGlobalDebtScale(uint256 marketId) external view returns (uint256) {
+        uint256 scale = AuraStorage.getStorage().marketStates[marketId].globalDebtScale;
+        return scale == 0 ? AuraStorage.RAY : scale;
+    }
+
     // ------------------------------- Phase 6: Flash Loans (EIP-3156)
 
     /// @notice Set the flash loan fee. Admin only. Max 10_000 bps (100%).

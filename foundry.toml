@@ -11,10 +11,20 @@ evm_version = "cancun"
 [profile.default.fmt]
 line_length = 120
 
+[profile.default.fuzz]
+runs   = 1000
+seed   = "0x1234"
+
+[profile.default.invariant]
+runs             = 256
+depth            = 50
+fail_on_revert   = false
+
 [rpc_endpoints]
+mainnet  = "${ETH_RPC_URL}"
 arbitrum = "${ARBITRUM_RPC_URL}"
-base = "${BASE_RPC_URL}"
-sepolia = "https://ethereum-sepolia.publicnode.com"
+base     = "${BASE_RPC_URL}"
+sepolia  = "https://ethereum-sepolia.publicnode.com"
 
 [etherscan]
 arbitrum = { key = "${ARBISCAN_API_KEY}", url = "https://api.arbiscan.io/api" }
