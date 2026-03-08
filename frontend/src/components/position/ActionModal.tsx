@@ -3,7 +3,7 @@ import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadCont
 import { parseUnits, formatUnits, type Hash } from 'viem';
 import { X, ArrowRight, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { auraEngineAbi, erc20Abi } from '../../abi/auraEngine';
-import { useContractAddresses, gasFor } from '../../lib/contracts';
+import { useContractAddresses, gasFor, TARGET_CHAIN_ID } from '../../lib/contracts';
 
 export type ActionType = 'deposit' | 'withdraw' | 'borrow' | 'repay';
 
@@ -56,6 +56,26 @@ export default function ActionModal({
     try { return amount ? parseUnits(amount, 18) : 0n; } catch { return 0n; }
   })();
 
+  // Read wallet balances: vault shares (for deposit) and debt token (for repay/borrow info)
+  const { data: walletData } = useReadContracts({
+    contracts: address ? [
+      ...(vaultAddress ? [{ address: vaultAddress, abi: erc20Abi, functionName: 'balanceOf' as const, args: [address] as const, chainId: TARGET_CHAIN_ID }] : []),
+      ...(debtTokenAddress ? [{ address: debtTokenAddress, abi: erc20Abi, functionName: 'balanceOf' as const, args: [address] as const, chainId: TARGET_CHAIN_ID }] : []),
+    ] : [],
+    query: { enabled: !!address && (!!vaultAddress || !!debtTokenAddress) },
+  });
+  const walletShares    = vaultAddress     ? ((walletData?.[0]?.result as bigint | undefined) ?? 0n) : 0n;
+  const walletDebtToken = debtTokenAddress ? ((walletData?.[vaultAddress ? 1 : 0]?.result as bigint | undefined) ?? 0n) : 0n;
+
+  // Read collateral value for borrow max calculation
+  const { data: posValueData } = useReadContracts({
+    contracts: engine && address ? [
+      { address: engine, abi: auraEngineAbi, functionName: 'getPositionCollateralValue' as const, args: [address, BigInt(marketId)] as const, chainId: TARGET_CHAIN_ID },
+    ] : [],
+    query: { enabled: !!engine && !!address && action === 'borrow' },
+  });
+  const collateralValue = (posValueData?.[0]?.result as bigint | undefined) ?? 0n;
+
   // Check allowance for deposit (vault → engine) or repay (debtToken → engine)
   const approvalToken = action === 'deposit' ? vaultAddress : action === 'repay' ? debtTokenAddress : undefined;
   const { data: allowanceData, refetch: refetchAllowance } = useReadContracts({
@@ -87,8 +107,14 @@ export default function ActionModal({
   const close = () => { reset(); onClose(); };
 
   const setMax = () => {
-    if (action === 'withdraw' && sharesBalance) setAmount(formatUnits(sharesBalance, 18));
-    if (action === 'repay'    && debtBalance)   setAmount(formatUnits(debtBalance, 18));
+    if (action === 'deposit'  && walletShares > 0n) setAmount(formatUnits(walletShares, 18));
+    if (action === 'withdraw' && sharesBalance)     setAmount(formatUnits(sharesBalance, 18));
+    if (action === 'repay'    && debtBalance)       setAmount(formatUnits(debtBalance, 18));
+    if (action === 'borrow'   && collateralValue > 0n) {
+      // Max borrow ≈ 80% of collateral value (LTV), minus existing debt
+      const maxRaw = (collateralValue * 8000n) / 10000n - (debtBalance ?? 0n);
+      if (maxRaw > 0n) setAmount(formatUnits(maxRaw, 18));
+    }
   };
 
   async function submit() {
@@ -204,42 +230,45 @@ export default function ActionModal({
                   className="input-field flex-1"
                   disabled={isPending}
                 />
-                {(action === 'withdraw' || action === 'repay') && (!!sharesBalance || !!debtBalance) && (
-                  <button
-                    type="button"
-                    onClick={setMax}
-                    className="px-3 py-2 rounded-xl text-sm font-medium bg-aura-gold/15 text-aura-gold hover:bg-aura-gold/25 transition-colors"
-                    disabled={isPending}
-                  >
-                    Max
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={setMax}
+                  className="px-3 py-2 rounded-xl text-sm font-medium bg-aura-gold/15 text-aura-gold hover:bg-aura-gold/25 transition-colors"
+                  disabled={isPending}
+                >
+                  Max
+                </button>
               </div>
 
               {/* Balance hints */}
+              {action === 'deposit' && (
+                <p className="text-xs text-aura-muted mt-1">
+                  Wallet shares: <span className="text-white font-mono">{formatUnits(walletShares, 18)}</span>
+                </p>
+              )}
               {action === 'withdraw' && sharesBalance !== undefined && (
                 <p className="text-xs text-aura-muted mt-1">
                   Deposited shares: <span className="text-white font-mono">{formatUnits(sharesBalance, 18)}</span>
                 </p>
               )}
+              {action === 'borrow' && (
+                <p className="text-xs text-aura-muted mt-1">
+                  Collateral value: <span className="text-white font-mono">{formatUnits(collateralValue, 18)}</span>
+                  {' · '}Max borrow (80% LTV): <span className="text-white font-mono">
+                    {formatUnits((collateralValue * 8000n / 10000n) - (debtBalance ?? 0n) > 0n ? (collateralValue * 8000n / 10000n) - (debtBalance ?? 0n) : 0n, 18)}
+                  </span>
+                  {!!debtBalance && debtBalance > 0n && (
+                    <>{' · '}Current debt: <span className="text-aura-warning font-mono">{formatUnits(debtBalance, 18)}</span></>
+                  )}
+                </p>
+              )}
               {action === 'repay' && debtBalance !== undefined && debtBalance > 0n && (
                 <p className="text-xs text-aura-muted mt-1">
                   Outstanding debt: <span className="text-white font-mono">{formatUnits(debtBalance, 18)}</span>
+                  {' · '}Wallet USDC: <span className="text-white font-mono">{formatUnits(walletDebtToken, 18)}</span>
                 </p>
               )}
             </div>
-
-            {/* Hint messages */}
-            {action === 'deposit' && (
-              <p className="text-xs text-aura-muted mb-4">
-                Enter the number of vault shares to deposit as collateral. You must already hold shares in the vault.
-              </p>
-            )}
-            {action === 'borrow' && (
-              <p className="text-xs text-aura-muted mb-4">
-                Borrow debt tokens against your collateral. Ensure sufficient collateral ratio.
-              </p>
-            )}
 
             {/* Submit */}
             <button

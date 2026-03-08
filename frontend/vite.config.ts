@@ -7,6 +7,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/api": { target: "http://localhost:3001", changeOrigin: true },
+      "/rpc": { target: "http://127.0.0.1:8545", changeOrigin: true, rewrite: (path) => path.replace(/^\/rpc/, "") },
     },
   },
 });

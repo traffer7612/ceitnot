@@ -6,9 +6,11 @@ import { useMarkets } from '../hooks/useMarkets';
 import { useAdmin } from '../hooks/useAdmin';
 import { formatWad, formatHf, parseHf, hfColor, hfBarColor, hfBarPct } from '../lib/utils';
 import ActionModal, { type ActionType } from '../components/position/ActionModal';
-import { Wallet, RefreshCw, PlusCircle, MinusCircle, ArrowUpCircle, ArrowDownCircle } from 'lucide-react';
+import MintSharesModal from '../components/position/MintSharesModal';
+import { Wallet, RefreshCw, PlusCircle, MinusCircle, ArrowUpCircle, ArrowDownCircle, Coins } from 'lucide-react';
 
 type ModalState = { open: true; action: ActionType; marketId: number } | { open: false };
+type MintState  = { open: true; marketId: number; vaultAddress: `0x${string}` } | { open: false };
 
 export default function PositionPage() {
   const { address, isConnected } = useAccount();
@@ -16,6 +18,7 @@ export default function PositionPage() {
   const { markets } = useMarkets();
   const { debtToken } = useAdmin();
   const [modal, setModal] = useState<ModalState>({ open: false });
+  const [mintModal, setMintModal] = useState<MintState>({ open: false });
 
   const hf    = parseHf(healthFactor);
   const hfPct = hfBarPct(hf);
@@ -23,6 +26,10 @@ export default function PositionPage() {
   const openModal = (action: ActionType, marketId: number) =>
     setModal({ open: true, action, marketId });
   const closeModal = () => setModal({ open: false });
+
+  const openMint = (marketId: number, vaultAddress: `0x${string}`) =>
+    setMintModal({ open: true, marketId, vaultAddress });
+  const closeMint = () => setMintModal({ open: false });
 
   if (!isConnected) {
     return (
@@ -80,14 +87,22 @@ export default function PositionPage() {
           <p className="text-xs text-aura-muted mt-1">Deposit collateral to open a position in a market.</p>
           <div className="flex justify-center gap-3 mt-5 flex-wrap">
             {markets.slice(0, 3).map(m => (
-              <button
-                key={m.id}
-                onClick={() => openModal('deposit', m.id)}
-                className="btn-primary text-sm flex items-center gap-2"
-              >
-                <PlusCircle size={14} />
-                Deposit in Market #{m.id}
-              </button>
+              <div key={m.id} className="flex gap-2">
+                <button
+                  onClick={() => openMint(m.id, m.config.vault)}
+                  className="btn-secondary text-sm flex items-center gap-2"
+                >
+                  <Coins size={14} />
+                  Get Shares #{m.id}
+                </button>
+                <button
+                  onClick={() => openModal('deposit', m.id)}
+                  className="btn-primary text-sm flex items-center gap-2"
+                >
+                  <PlusCircle size={14} />
+                  Deposit #{m.id}
+                </button>
+              </div>
             ))}
           </div>
         </div>
@@ -167,6 +182,12 @@ export default function PositionPage() {
                 {/* Action buttons */}
                 <div className="px-5 py-3 flex flex-wrap gap-2">
                   <button
+                    onClick={() => market?.config.vault && openMint(pos.marketId, market.config.vault)}
+                    className="btn-ghost text-xs flex items-center gap-1.5 py-2 border border-aura-border"
+                  >
+                    <Coins size={13} /> Get Shares
+                  </button>
+                  <button
                     onClick={() => openModal('deposit', pos.marketId)}
                     className="btn-primary text-xs flex items-center gap-1.5 py-2"
                   >
@@ -211,6 +232,17 @@ export default function PositionPage() {
           debtBalance={positions.find(p => p.marketId === modal.marketId)?.debt}
           onClose={closeModal}
           onSuccess={() => { closeModal(); refetch(); }}
+        />
+      )}
+
+      {/* Mint shares modal */}
+      {mintModal.open && (
+        <MintSharesModal
+          open
+          marketId={mintModal.marketId}
+          vaultAddress={mintModal.vaultAddress}
+          onClose={closeMint}
+          onSuccess={() => { closeMint(); refetch(); }}
         />
       )}
     </div>

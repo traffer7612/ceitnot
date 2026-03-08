@@ -3,6 +3,9 @@ import { useReadContract } from 'wagmi';
 import type { Address } from 'viem';
 import { auraEngineAbi } from '../abi/auraEngine';
 
+/** Target chain for all contract reads (from .env or default Foundry) */
+export const TARGET_CHAIN_ID = Number(import.meta.env.VITE_CHAIN_ID ?? 31337);
+
 async function fetchFromApi(): Promise<{ engine?: string; registry?: string }> {
   try {
     const res = await fetch('/api/config/contracts');
@@ -39,6 +42,7 @@ export function useContractAddresses() {
     address: engine,
     abi: auraEngineAbi,
     functionName: 'marketRegistry',
+    chainId: TARGET_CHAIN_ID,
     query: { enabled: needsOnChainRegistry, staleTime: Infinity },
   });
 

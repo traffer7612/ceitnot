@@ -17,8 +17,8 @@ export const config = getDefaultConfig({
   projectId: import.meta.env.VITE_WALLETCONNECT_PROJECT_ID ?? 'aura-dev-placeholder',
   chains: [foundry, localhost1337, sepolia, arbitrum, base],
   transports: {
-    [foundry.id]:       http('http://127.0.0.1:8545'),
-    [localhost1337.id]: http('http://127.0.0.1:8545'),
+    [foundry.id]:       http('/rpc'),
+    [localhost1337.id]: http('/rpc'),
     [sepolia.id]:       http('https://ethereum-sepolia.publicnode.com'),
     [arbitrum.id]:      http(),
     [base.id]:          http(),

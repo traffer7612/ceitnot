@@ -2,7 +2,7 @@ import { useReadContracts } from 'wagmi';
 import { useAccount } from 'wagmi';
 import type { Address } from 'viem';
 import { auraEngineAbi } from '../abi/auraEngine';
-import { useContractAddresses } from '../lib/contracts';
+import { useContractAddresses, TARGET_CHAIN_ID } from '../lib/contracts';
 
 export function useAdmin() {
   const { address }   = useAccount();
@@ -10,11 +10,11 @@ export function useAdmin() {
 
   const { data, isLoading, refetch } = useReadContracts({
     contracts: [
-      { address: engine!, abi: auraEngineAbi, functionName: 'admin'              as const },
-      { address: engine!, abi: auraEngineAbi, functionName: 'paused'             as const },
-      { address: engine!, abi: auraEngineAbi, functionName: 'emergencyShutdown'  as const },
-      { address: engine!, abi: auraEngineAbi, functionName: 'debtToken'          as const },
-      { address: engine!, abi: auraEngineAbi, functionName: 'marketRegistry'     as const },
+      { address: engine!, abi: auraEngineAbi, functionName: 'admin'              as const, chainId: TARGET_CHAIN_ID },
+      { address: engine!, abi: auraEngineAbi, functionName: 'paused'             as const, chainId: TARGET_CHAIN_ID },
+      { address: engine!, abi: auraEngineAbi, functionName: 'emergencyShutdown'  as const, chainId: TARGET_CHAIN_ID },
+      { address: engine!, abi: auraEngineAbi, functionName: 'debtToken'          as const, chainId: TARGET_CHAIN_ID },
+      { address: engine!, abi: auraEngineAbi, functionName: 'marketRegistry'     as const, chainId: TARGET_CHAIN_ID },
     ],
     query: { enabled: !!engine },
   });
