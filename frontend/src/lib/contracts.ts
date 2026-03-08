@@ -1,7 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
+import { useReadContract } from 'wagmi';
 import type { Address } from 'viem';
+import { auraEngineAbi } from '../abi/auraEngine';
 
-async function fetchFromApi(): Promise<{ engine?: string }> {
+async function fetchFromApi(): Promise<{ engine?: string; registry?: string }> {
   try {
     const res = await fetch('/api/config/contracts');
     if (!res.ok) return {};
@@ -12,26 +14,40 @@ async function fetchFromApi(): Promise<{ engine?: string }> {
 }
 
 /**
- * Returns contract addresses, preferring VITE_* env vars and falling back
- * to the /api/config/contracts proxy endpoint.
+ * Returns contract addresses.
+ * Priority: VITE_* env vars > /api/config/contracts > engine.marketRegistry() on-chain
  */
 export function useContractAddresses() {
   const envEngine   = import.meta.env.VITE_ENGINE_ADDRESS   as Address | undefined;
   const envRegistry = import.meta.env.VITE_REGISTRY_ADDRESS as Address | undefined;
-  const hasAll = !!envEngine && !!envRegistry;
+  const hasEnvRegistry = !!envRegistry;
 
-  const { data: apiData, isLoading } = useQuery({
+  const { data: apiData, isLoading: apiLoading } = useQuery({
     queryKey: ['contracts-config'],
     queryFn: fetchFromApi,
-    enabled: !hasAll,
+    enabled: !envEngine,
     staleTime: Infinity,
     retry: false,
   });
 
+  const engine = (envEngine ?? apiData?.engine as Address | undefined);
+
+  // Auto-discover registry from engine.marketRegistry() if not set via env/api
+  const apiRegistry = apiData?.registry as Address | undefined;
+  const needsOnChainRegistry = !!engine && !hasEnvRegistry && !apiRegistry;
+  const { data: onChainRegistry } = useReadContract({
+    address: engine,
+    abi: auraEngineAbi,
+    functionName: 'marketRegistry',
+    query: { enabled: needsOnChainRegistry, staleTime: Infinity },
+  });
+
+  const registry = (envRegistry ?? apiRegistry ?? onChainRegistry) as Address | undefined;
+
   return {
-    engine:    (envEngine   ?? apiData?.engine   as Address | undefined),
-    registry:  (envRegistry ?? undefined)         as Address | undefined,
-    isLoading: !hasAll && isLoading,
+    engine,
+    registry,
+    isLoading: (!envEngine && apiLoading),
   };
 }
 

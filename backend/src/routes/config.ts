@@ -24,10 +24,8 @@ configRouter.get("/chains", (_req, res) => {
 });
 
 configRouter.get("/contracts", (_req, res) => {
-  const engine = process.env.AURA_ENGINE_ADDRESS ?? "";
+  const engine    = process.env.AURA_ENGINE_ADDRESS   ?? "";
+  const registry  = process.env.AURA_REGISTRY_ADDRESS ?? "";
   const vault4626 = process.env.AURA_VAULT_4626_ADDRESS ?? "";
-  res.json({
-    engine,
-    vault4626,
-  });
+  res.json({ engine, registry, vault4626 });
 });
