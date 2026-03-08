@@ -20,6 +20,9 @@ runs             = 256
 depth            = 50
 fail_on_revert   = false
 
+[lint]
+deny = "never"
+
 [rpc_endpoints]
 mainnet  = "${ETH_RPC_URL}"
 arbitrum = "${ARBITRUM_RPC_URL}"

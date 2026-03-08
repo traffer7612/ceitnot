@@ -797,6 +797,21 @@ contract AuraEngine is Multicall {
         return scale == 0 ? AuraStorage.RAY : scale;
     }
 
+    /// @notice Returns the engine admin address.
+    function admin() external view returns (address) {
+        return AuraStorage.getStorage().admin;
+    }
+
+    /// @notice Returns true if the engine is paused (deposits, borrows, liquidations blocked).
+    function paused() external view returns (bool) {
+        return AuraStorage.getStorage().paused;
+    }
+
+    /// @notice Returns true if the engine is in emergency shutdown (only repay/withdraw allowed).
+    function emergencyShutdown() external view returns (bool) {
+        return AuraStorage.getStorage().emergencyShutdown;
+    }
+
     // ------------------------------- Phase 6: Flash Loans (EIP-3156)
 
     /// @notice Set the flash loan fee. Admin only. Max 10_000 bps (100%).
