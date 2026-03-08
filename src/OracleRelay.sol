@@ -39,7 +39,10 @@ contract OracleRelay is IOracleRelay {
 
     event TwapUpdated(uint256 price, uint256 timestamp);
 
+    error OracleRelay__ZeroPrimaryFeed();
+
     constructor(address primaryFeed_, address fallbackFeed_, uint256 twapPeriod_) {
+        if (primaryFeed_ == address(0)) revert OracleRelay__ZeroPrimaryFeed();
         PRIMARY_FEED = primaryFeed_;
         FALLBACK_FEED = fallbackFeed_;
         twapPeriod = twapPeriod_;

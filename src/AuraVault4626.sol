@@ -15,7 +15,10 @@ import { IAuraEngine } from "./interfaces/IAuraEngine.sol";
 contract AuraVault4626 {
     address public immutable ENGINE;
 
+    error Vault4626__ZeroAddress();
+
     constructor(address engine_) {
+        if (engine_ == address(0)) revert Vault4626__ZeroAddress();
         ENGINE = engine_;
     }
 

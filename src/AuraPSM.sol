@@ -103,16 +103,14 @@ contract AuraPSM {
         // Ceiling check
         if (ceiling != 0 && mintedViaPsm + ausdOut > ceiling) revert PSM__CeilingExceeded();
 
-        // Pull peggedToken from caller
-        _transferIn(peggedToken, msg.sender, amount);
-
-        // Accrue fee and track minted
+        // Effects first (CEI pattern)
         unchecked {
             feeReserves  += fee;
             mintedViaPsm += ausdOut;
         }
 
-        // Mint aUSD to caller (PSM must be a registered minter)
+        // Interactions
+        _transferIn(peggedToken, msg.sender, amount);
         IAuraUSD(ausd).mint(msg.sender, ausdOut);
 
         emit SwapIn(msg.sender, amount, ausdOut, fee);
@@ -137,16 +135,14 @@ contract AuraPSM {
         if (available < feeReserves || available - feeReserves < stableOut)
             revert PSM__InsufficientReserves();
 
-        // Burn aUSD from caller (requires prior approve)
-        IAuraUSD(ausd).burnFrom(msg.sender, amount);
-
-        // Decrease net minted (floor at 0 to handle cross-source burns)
+        // Effects first (CEI pattern)
         unchecked {
             mintedViaPsm  = mintedViaPsm >= amount ? mintedViaPsm - amount : 0;
             feeReserves  += fee;
         }
 
-        // Send peggedToken to caller
+        // Interactions
+        IAuraUSD(ausd).burnFrom(msg.sender, amount);
         _transferOut(peggedToken, msg.sender, stableOut);
 
         emit SwapOut(msg.sender, amount, stableOut, fee);

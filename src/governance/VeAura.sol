@@ -134,14 +134,16 @@ contract VeAura {
 
         _updateRevenue(msg.sender);
 
-        _transferIn(token, msg.sender, amount);
-
+        // Effects first (CEI pattern)
         lb.amount     = amount.toUint128();
         lb.unlockTime = uint48(rounded);
         totalLocked  += amount;
 
         _writeTotalSupplyCheckpoint();
         _moveVotingPower(address(0), _delegatee(msg.sender), _currentBias(lb));
+
+        // Interaction last
+        _transferIn(token, msg.sender, amount);
 
         emit Locked(msg.sender, amount, rounded);
     }
@@ -158,14 +160,16 @@ contract VeAura {
 
         _updateRevenue(msg.sender);
 
-        _transferIn(token, msg.sender, extra);
-
+        // Effects first (CEI pattern)
         lb.amount = (uint256(lb.amount) + extra).toUint128();
         totalLocked += extra;
 
         _writeTotalSupplyCheckpoint();
         // Write NEW bias (after amount increase)
         _moveVotingPower(_delegatee(msg.sender), _delegatee(msg.sender), _currentBias(lb));
+
+        // Interaction last
+        _transferIn(token, msg.sender, extra);
 
         emit AmountIncreased(msg.sender, extra, lb.amount);
     }
@@ -276,8 +280,10 @@ contract VeAura {
         if (msg.sender != admin) revert VeAura__Unauthorized();
         if (amount == 0) revert VeAura__ZeroAmount();
         if (totalLocked == 0) revert VeAura__NoRevenue();
-        _transferIn(revenueToken, msg.sender, amount);
+        // Effects first (CEI pattern)
         revenuePerTokenStored += (amount * PRECISION) / totalLocked;
+        // Interaction last
+        _transferIn(revenueToken, msg.sender, amount);
         emit RevenueDistributed(revenueToken, amount);
     }
 
@@ -311,6 +317,7 @@ contract VeAura {
 
     function setRevenueToken(address newToken) external {
         if (msg.sender != admin) revert VeAura__Unauthorized();
+        if (newToken == address(0)) revert VeAura__ZeroAddress();
         revenueToken = newToken;
     }
 

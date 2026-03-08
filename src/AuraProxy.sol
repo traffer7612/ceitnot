@@ -12,9 +12,12 @@ contract AuraProxy {
     bytes32 private constant IMPLEMENTATION_SLOT =
         0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
 
+    error Proxy__ZeroImplementation();
+
     /// @param implementation_ Initial implementation (AuraEngine)
     /// @param data_ Encoded call to initializer (e.g. AuraEngine.initialize(...))
     constructor(address implementation_, bytes memory data_) {
+        if (implementation_ == address(0)) revert Proxy__ZeroImplementation();
         assembly {
             sstore(IMPLEMENTATION_SLOT, implementation_)
         }

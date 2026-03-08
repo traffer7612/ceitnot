@@ -18,11 +18,22 @@ Production-ready DeFi primitive that lets protocols or users deposit **yield-bea
 
 | Contract | Description |
 |----------|-------------|
-| `AuraEngine` | Core logic: deposit/withdraw collateral, borrow/repay, harvest yield, liquidate |
-| `AuraProxy` | UUPS proxy; deploy with implementation + initializer calldata |
+| `AuraEngine` | Core logic: deposit/withdraw collateral, borrow/repay, harvest yield, liquidate, flash loans, delegation |
+| `AuraProxy` | UUPS proxy (EIP-1822 / EIP-1967); deploy with implementation + initializer calldata |
 | `AuraStorage` | EIP-7201 namespaced storage layout |
+| `AuraMarketRegistry` | Multi-market registry: vault, oracle, risk params, caps, isolation mode |
+| `OracleRelay` | Multi-oracle V1 (Chainlink primary + fallback, TWAP, staleness check) |
+| `OracleRelayV2` | Multi-source median oracle, circuit breaker, L2 sequencer uptime feed |
+| `AuraUSD` | Mintable stablecoin (aUSD) for CDP mode, EIP-2612 permit |
+| `AuraPSM` | Peg Stability Module: 1:1 swaps aUSD ↔ pegged stable (USDC/DAI) |
+| `AuraRouter` | Stateless router: atomic deposit+borrow, repay+withdraw, permit, leverage |
+| `AuraTreasury` | Protocol treasury: deposit, withdraw, batch distribute |
+| `AuraToken` | Governance ERC-20 + ERC20Votes (EIP-6372 timestamp clock) |
+| `VeAura` | Vote-Escrow AURA: lock → voting power + revenue share |
+| `AuraGovernor` | OpenZeppelin Governor + TimelockControl + VotesQuorumFraction |
+| `InterestRateModel` | Kink-based interest rate model |
 | `FixedPoint` | WAD/RAY math and scale-after-yield |
-| `OracleRelay` | Multi-oracle (Chainlink + fallback) |
+| `Multicall` | Batch delegatecall for atomic admin operations |
 | `AuraVault4626` | ERC-4626 view adapter over engine collateral |
 
 ## Build & Test
@@ -74,10 +85,22 @@ npm run dev           # http://localhost:5173, proxies /api to backend
 
 Connect a wallet (Arbitrum or Base); the dashboard shows your position and lets you deposit collateral, borrow, and repay. Set `AURA_ENGINE_ADDRESS` in the backend so the app can read stats and contract addresses.
 
+## Security
+
+- **296 tests passing** (unit, security, flash-loan, governance, CDP/PSM, router, oracle, fuzz ×1000, invariants ×256)
+- **Slither v0.11.3** static analysis: 264 findings → all High/Medium fixed; Low/Info accepted
+- **0 critical vulnerabilities**
+- Full report: **[docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md)**
+
 ## Documentation
 
-- **Storage:** [docs/EIP-7201-STORAGE-MAP.md](docs/EIP-7201-STORAGE-MAP.md)
-- **Architecture & death-spiral:** [docs/ARCHITECTURE-AND-DEATH-SPIRAL.md](docs/ARCHITECTURE-AND-DEATH-SPIRAL.md)
+- **Contracts API reference:** [docs/CONTRACTS.md](docs/CONTRACTS.md)
+- **Security audit:** [docs/SECURITY-AUDIT.md](docs/SECURITY-AUDIT.md)
+- **Changelog:** [docs/CHANGELOG.md](docs/CHANGELOG.md)
+- **Architecture:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- **Storage layout:** [docs/EIP-7201-STORAGE-MAP.md](docs/EIP-7201-STORAGE-MAP.md)
+- **Death-spiral analysis:** [docs/ARCHITECTURE-AND-DEATH-SPIRAL.md](docs/ARCHITECTURE-AND-DEATH-SPIRAL.md)
+- **Beginner guide (RU):** [docs/BEGINNER-GUIDE.md](docs/BEGINNER-GUIDE.md)
 
 ## License
 

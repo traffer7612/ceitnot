@@ -76,6 +76,7 @@ contract AuraMarketRegistry is IMarketRegistry {
 
     /// @notice Set the authorised engine address (AuraEngine proxy).
     function setEngine(address engine_) external onlyAdmin {
+        if (engine_ == address(0)) revert Registry__InvalidParams();
         engine = engine_;
         emit EngineSet(engine_);
     }

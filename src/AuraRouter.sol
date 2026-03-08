@@ -33,6 +33,7 @@ contract AuraRouter {
     // ------------------------------- Errors
     error Router__ZeroAddress();
     error Router__ZeroAmount();
+    error Router__TransferFailed();
 
     // ------------------------------- Events
 
@@ -82,8 +83,8 @@ contract AuraRouter {
         uint256 shares
     ) external {
         if (shares == 0) revert Router__ZeroAmount();
-        IERC4626(vault).transferFrom(msg.sender, address(this), shares);
-        IERC4626(vault).approve(engine, shares);
+        if (!IERC4626(vault).transferFrom(msg.sender, address(this), shares)) revert Router__TransferFailed();
+        if (!IERC4626(vault).approve(engine, shares)) revert Router__TransferFailed();
         IAuraEngineRouter(engine).depositCollateral(msg.sender, marketId, shares);
     }
 
@@ -108,8 +109,8 @@ contract AuraRouter {
     ) external {
         if (shares == 0) revert Router__ZeroAmount();
         IERC2612(vault).permit(msg.sender, address(this), shares, deadline, v, r, s);
-        IERC4626(vault).transferFrom(msg.sender, address(this), shares);
-        IERC4626(vault).approve(engine, shares);
+        if (!IERC4626(vault).transferFrom(msg.sender, address(this), shares)) revert Router__TransferFailed();
+        if (!IERC4626(vault).approve(engine, shares)) revert Router__TransferFailed();
         IAuraEngineRouter(engine).depositCollateral(msg.sender, marketId, shares);
     }
 
@@ -133,8 +134,8 @@ contract AuraRouter {
     ) external {
         if (shares == 0 || borrowAmount == 0) revert Router__ZeroAmount();
         // Pull vault shares from user into this router, then approve engine
-        IERC4626(vault).transferFrom(msg.sender, address(this), shares);
-        IERC4626(vault).approve(engine, shares);
+        if (!IERC4626(vault).transferFrom(msg.sender, address(this), shares)) revert Router__TransferFailed();
+        if (!IERC4626(vault).approve(engine, shares)) revert Router__TransferFailed();
         // Engine pulls shares from router (msg.sender = router) and borrows for user
         IAuraEngineRouter(engine).depositAndBorrow(msg.sender, marketId, shares, borrowAmount);
         emit DepositAndBorrowed(msg.sender, marketId, shares, borrowAmount);
@@ -199,8 +200,8 @@ contract AuraRouter {
         uint256 borrowAmount
     ) external {
         if (shares == 0 || borrowAmount == 0) revert Router__ZeroAmount();
-        IERC4626(vault).transferFrom(msg.sender, address(this), shares);
-        IERC4626(vault).approve(engine, shares);
+        if (!IERC4626(vault).transferFrom(msg.sender, address(this), shares)) revert Router__TransferFailed();
+        if (!IERC4626(vault).approve(engine, shares)) revert Router__TransferFailed();
         IAuraEngineRouter(engine).depositAndBorrow(msg.sender, marketId, shares, borrowAmount);
         emit DepositAndBorrowed(msg.sender, marketId, shares, borrowAmount);
     }
