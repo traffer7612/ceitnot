@@ -74,6 +74,7 @@ export default function GovernancePage() {
   const totalLocked   = (readData?.[5]?.result as bigint | undefined) ?? 0n;
   const pendingRev    = (readData?.[6]?.result as bigint | undefined) ?? 0n;
   const tokenSymbol   = (readData?.[7]?.result as string | undefined) ?? 'LUMINA';
+  const displaySymbol = tokenSymbol === 'AURA' ? 'LUMINA' : tokenSymbol; // UI branding
 
   const hasLock       = lockedAmount > 0n;
   const lockExpired   = hasLock && BigInt(Math.floor(Date.now() / 1000)) >= unlockTime;
@@ -344,7 +345,7 @@ export default function GovernancePage() {
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
                   <p className="text-aura-muted">Amount Locked</p>
-                  <p className="font-mono text-white mt-1">{formatWad(lockedAmount, 4)} {tokenSymbol}</p>
+                  <p className="font-mono text-white mt-1">{formatWad(lockedAmount, 4)} {displaySymbol}</p>
                 </div>
                 <div>
                   <p className="text-aura-muted">Unlock Date</p>
@@ -368,7 +369,7 @@ export default function GovernancePage() {
                   className="btn-primary w-full mt-4 flex items-center justify-center gap-2"
                 >
                   {isPending && activeAction === 'withdraw' && <Loader2 size={16} className="animate-spin" />}
-                  <Unlock size={16} /> Withdraw {tokenSymbol}
+                  <Unlock size={16} /> Withdraw {displaySymbol}
                 </button>
               )}
             </div>
@@ -397,7 +398,7 @@ export default function GovernancePage() {
                   >Max</button>
                 </div>
                 <p className="text-xs text-aura-muted mt-1">
-                  Balance: <span className="text-white font-mono">{formatWad(auraBalance, 2)} {tokenSymbol}</span>
+                  Balance: <span className="text-white font-mono">{formatWad(auraBalance, 2)} {displaySymbol}</span>
                 </p>
               </div>
 
@@ -424,7 +425,7 @@ export default function GovernancePage() {
                 className="btn-primary w-full flex items-center justify-center gap-2"
               >
                 {isPending && activeAction === 'lock' && <Loader2 size={16} className="animate-spin" />}
-                {step === 'approving' && activeAction === 'lock' ? 'Approving…' : `Lock ${tokenSymbol}`}
+                {step === 'approving' && activeAction === 'lock' ? 'Approving…' : `Lock ${displaySymbol}`}
               </button>
             </div>
           )}
@@ -456,7 +457,7 @@ export default function GovernancePage() {
                 className="btn-primary w-full flex items-center justify-center gap-2"
               >
                 {isPending && activeAction === 'increase' && <Loader2 size={16} className="animate-spin" />}
-                {step === 'approving' && activeAction === 'increase' ? 'Approving…' : 'Add AURA to Lock'}
+                {step === 'approving' && activeAction === 'increase' ? 'Approving…' : 'Add LUMINA to Lock'}
               </button>
             </div>
           )}
@@ -505,7 +506,7 @@ export default function GovernancePage() {
             <div className="p-4 bg-aura-bg rounded-xl mb-4">
               <p className="text-aura-muted text-sm">Pending Revenue</p>
               <p className="text-2xl font-bold font-mono text-white mt-1">{formatWad(pendingRev, 6)}</p>
-              <p className="text-xs text-aura-muted mt-1">Earned from protocol fees, proportional to your locked AURA</p>
+              <p className="text-xs text-aura-muted mt-1">Earned from protocol fees, proportional to your locked LUMINA</p>
             </div>
             <button
               onClick={handleClaim}
@@ -561,16 +562,16 @@ export default function GovernancePage() {
           {/* Contract info */}
           <div className="text-xs text-aura-muted space-y-1">
             <p>
-              <span className="text-aura-muted-2 uppercase tracking-wider">AURA Token:</span>{' '}
+              <span className="text-aura-muted-2 uppercase tracking-wider">LUMINA Token:</span>{' '}
               <span className="font-mono">{formatAddress(AURA_TOKEN)}</span>
             </p>
             <p>
-              <span className="text-aura-muted-2 uppercase tracking-wider">veAURA:</span>{' '}
+              <span className="text-aura-muted-2 uppercase tracking-wider">veLUMINA:</span>{' '}
               <span className="font-mono">{formatAddress(VE_AURA)}</span>
             </p>
             {(chainId === 31337 || chainId === 11155111) && (
               <p className="pt-2 text-aura-gold/80">
-                Тестовые AURA: наминчены скриптом DeployFullSepolia (10M) на адрес деплоера при запуске деплоя.
+                Тестовые LUMINA: наминчены скриптом DeployFullSepolia (10M) на адрес деплоера при запуске деплоя.
               </p>
             )}
           </div>

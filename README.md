@@ -1,4 +1,4 @@
-# Aura: The Autonomous Yield-Backed Credit Engine
+﻿# Lumina: The Autonomous Yield-Backed Credit Engine
 
 Production-ready DeFi primitive that lets protocols or users deposit **yield-bearing assets** (ERC-4626, e.g. stETH or sDAI) as collateral to **borrow stablecoins**. The **Yield Siphon** captures yield from collateral and applies it directly to principal debt in real time (self-liquidating debt).
 
@@ -18,23 +18,23 @@ Production-ready DeFi primitive that lets protocols or users deposit **yield-bea
 
 | Contract | Description |
 |----------|-------------|
-| `AuraEngine` | Core logic: deposit/withdraw collateral, borrow/repay, harvest yield, liquidate, flash loans, delegation |
-| `AuraProxy` | UUPS proxy (EIP-1822 / EIP-1967); deploy with implementation + initializer calldata |
-| `AuraStorage` | EIP-7201 namespaced storage layout |
-| `AuraMarketRegistry` | Multi-market registry: vault, oracle, risk params, caps, isolation mode |
-| `OracleRelay` | Multi-oracle V1 (Chainlink primary + fallback, TWAP, staleness check) |
-| `OracleRelayV2` | Multi-source median oracle, circuit breaker, L2 sequencer uptime feed |
-| `AuraUSD` | Mintable stablecoin (aUSD) for CDP mode, EIP-2612 permit |
-| `AuraPSM` | Peg Stability Module: 1:1 swaps aUSD ↔ pegged stable (USDC/DAI) |
-| `AuraRouter` | Stateless router: atomic deposit+borrow, repay+withdraw, permit, leverage |
-| `AuraTreasury` | Protocol treasury: deposit, withdraw, batch distribute |
-| `AuraToken` | Governance ERC-20 + ERC20Votes (EIP-6372 timestamp clock) |
-| `VeAura` | Vote-Escrow AURA: lock → voting power + revenue share |
-| `AuraGovernor` | OpenZeppelin Governor + TimelockControl + VotesQuorumFraction |
-| `InterestRateModel` | Kink-based interest rate model |
-| `FixedPoint` | WAD/RAY math and scale-after-yield |
-| `Multicall` | Batch delegatecall for atomic admin operations |
-| `AuraVault4626` | ERC-4626 view adapter over engine collateral |
+| Engine | Core logic: deposit/withdraw collateral, borrow/repay, harvest yield, liquidate, flash loans, delegation |
+| Proxy | UUPS proxy (EIP-1822 / EIP-1967); deploy with implementation + initializer calldata |
+| Storage | EIP-7201 namespaced storage layout |
+| MarketRegistry | Multi-market registry: vault, oracle, risk params, caps, isolation mode |
+| OracleRelay | Multi-oracle V1 (Chainlink primary + fallback, TWAP, staleness check) |
+| OracleRelayV2 | Multi-source median oracle, circuit breaker, L2 sequencer uptime feed |
+| LuminaUSD (aUSD) | Mintable stablecoin for CDP mode, EIP-2612 permit |
+| PSM | Peg Stability Module: 1:1 swaps aUSD ↔ pegged stable (USDC/DAI) |
+| Router | Stateless router: atomic deposit+borrow, repay+withdraw, permit, leverage |
+| Treasury | Protocol treasury: deposit, withdraw, batch distribute |
+| LuminaToken (LUMINA) | Governance ERC-20 + ERC20Votes (EIP-6372 timestamp clock) |
+| VeLumina | Vote-Escrow LUMINA: lock → voting power + revenue share |
+| Governor | OpenZeppelin Governor + TimelockControl + VotesQuorumFraction |
+| InterestRateModel | Kink-based interest rate model |
+| FixedPoint | WAD/RAY math and scale-after-yield |
+| Multicall | Batch delegatecall for atomic admin operations |
+| Vault4626 | ERC-4626 view adapter over engine collateral |
 
 ## Build & Test
 
@@ -51,10 +51,10 @@ forge test
 
 ## Deployment (conceptual)
 
-1. Deploy `AuraEngine` (implementation).
-2. Deploy `AuraProxy(implementation, abi.encodeCall(AuraEngine.initialize, (collateralVault, debtToken, oracleRelay, ltvBps, liquidationThresholdBps, liquidationPenaltyBps, heartbeat, timelockDelay)))`.
-3. Use the proxy address as the “engine” for integrations.
-4. Optionally deploy `OracleRelay(chainlinkFeed, redstoneFeed, twapPeriod)` and `AuraVault4626(proxy)`.
+1. Deploy Engine (implementation).
+2. Deploy Proxy with implementation + initializer calldata (debtToken, registry, heartbeat, timelock).
+3. Use the proxy address as the engine for integrations.
+4. Optionally deploy OracleRelay and ERC-4626 view adapter over the proxy.
 
 ## Быстрый старт (для новичков)
 
@@ -70,7 +70,7 @@ forge test
 
 ```bash
 cd backend
-cp .env.example .env   # set AURA_ENGINE_ADDRESS if you have a deployed engine
+cp .env.example .env   # set AURA_ENGINE_ADDRESS (engine proxy) if you have a deployed engine
 npm install
 npm run dev           # http://localhost:3001
 ```
@@ -83,7 +83,7 @@ npm install
 npm run dev           # http://localhost:5173, proxies /api to backend
 ```
 
-Connect a wallet (Arbitrum or Base); the dashboard shows your position and lets you deposit collateral, borrow, and repay. Set `AURA_ENGINE_ADDRESS` in the backend so the app can read stats and contract addresses.
+Connect a wallet (Arbitrum or Base); the dashboard shows your position and lets you deposit collateral, borrow, and repay. Set `AURA_ENGINE_ADDRESS` in the backend so the app can read stats and contract addresses. (Env var names still use the legacy prefix.)
 
 ## Security
 
