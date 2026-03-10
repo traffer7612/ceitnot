@@ -1,4 +1,4 @@
-# EIP-7201 Storage Map — Aura Engine
+# EIP-7201 Storage Map — Lumina Engine
 
 ## Namespace
 

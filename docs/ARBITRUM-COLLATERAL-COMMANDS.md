@@ -3,7 +3,7 @@
 Используются адреса твоего деплоя на **Arbitrum One**:
 
 - **wstETH (vault = коллатерал):** `0x5979D7b546E38E414F7E9822514be443A4800529`
-- **Движок Aura (proxy):** `0xeE18DcB25F95459BF3174ADB8792f83d8B9b0D70`
+- **Движок Lumina (proxy):** `0xeE18DcB25F95459BF3174ADB8792f83d8B9b0D70`
 
 На Arbitrum коллатерал — сам токен wstETH (1:1 с «долями»), отдельный vault не нужен.
 
@@ -35,7 +35,7 @@ cast send 0x5979D7b546E38E414F7E9822514be443A4800529 "approve(address,uint256)" 
 
 ---
 
-## Шаг 2. Внести коллатерал на сайте Aura
+## Шаг 2. Внести коллатерал на сайте Lumina
 
 1. Открой фронт (например `http://localhost:5173`), подключи кошелёк, выбери сеть **Arbitrum One**.
 2. Вкладка **Deposit**.
@@ -51,7 +51,7 @@ cast send 0x5979D7b546E38E414F7E9822514be443A4800529 "approve(address,uint256)" 
 | Действие | Команда / место |
 |----------|------------------|
 | Approve wstETH → движок | `cast send` выше (шаг 1) |
-| Deposit коллатерала | Сайт Aura → Deposit → ввести сумму wstETH → «Deposit collateral» |
+| Deposit коллатерала | Сайт Lumina → Deposit → ввести сумму wstETH → «Deposit collateral» |
 
 ---
 

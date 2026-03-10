@@ -1,4 +1,4 @@
-# Aura: Architecture & Death-Spiral Handling
+# Lumina: Architecture & Death-Spiral Handling
 
 ## 1. Yield-Distribution Algorithm (Stream-Settlement)
 
@@ -32,7 +32,7 @@ These choices prevent attackers from exploiting rounding to underpay debt or ove
 
 **“Death spiral”:** Collateral value falls faster than yield can repay debt, so the position becomes underwater (debt > collateral value) without a market-based correction.
 
-### How Aura Handles It
+### How Lumina Handles It
 
 1. **Liquidation threshold**  
    Positions are liquidatable when health factor &lt; 1, where  

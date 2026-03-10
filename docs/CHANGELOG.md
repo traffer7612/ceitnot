@@ -1,4 +1,4 @@
-# Changelog — Aura Protocol
+# Changelog — Lumina Protocol
 
 Все изменения по фазам разработки.
 
