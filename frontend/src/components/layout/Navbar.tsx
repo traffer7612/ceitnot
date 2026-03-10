@@ -1,12 +1,13 @@
 import { NavLink } from 'react-router-dom';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import { LayoutDashboard, BarChart3, Wallet, Zap, ShieldCheck, Vote, Menu, X } from 'lucide-react';
+import { LayoutDashboard, BarChart3, Wallet, Zap, ShieldCheck, Vote, ArrowDownUp, Menu, X } from 'lucide-react';
 import { useState } from 'react';
 
 const NAV_LINKS = [
-  { to: '/',            label: 'Dashboard',   Icon: LayoutDashboard },
+  { to: '/dashboard',   label: 'Dashboard',   Icon: LayoutDashboard },
   { to: '/markets',     label: 'Markets',     Icon: BarChart3 },
   { to: '/position',    label: 'Position',    Icon: Wallet },
+  { to: '/swap',        label: 'Swap',        Icon: ArrowDownUp },
   { to: '/governance',  label: 'Governance',  Icon: Vote },
   { to: '/liquidate',   label: 'Liquidate',   Icon: Zap },
   { to: '/admin',       label: 'Admin',       Icon: ShieldCheck },
@@ -19,10 +20,10 @@ export default function Navbar() {
     <header className="sticky top-0 z-50 border-b border-aura-border bg-aura-bg/80 backdrop-blur-md">
       <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-16">
         {/* Logo */}
-        <NavLink to="/" className="flex items-center gap-2 shrink-0">
+        <NavLink to="/" className="flex items-center gap-2 shrink-0" end>
           <span className="text-xl font-bold">
             <span className="text-aura-gold">⬡</span>
-            <span className="ml-1.5 tracking-tight">AURA</span>
+            <span className="ml-1.5 tracking-tight">LUMINA</span>
           </span>
           <span className="hidden sm:block text-[10px] uppercase tracking-[0.2em] text-aura-muted leading-none mt-0.5">
             Protocol
@@ -35,7 +36,7 @@ export default function Navbar() {
             <NavLink
               key={to}
               to={to}
-              end={to === '/'}
+              end={to === '/dashboard'}
               className={({ isActive }) =>
                 `px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
                   isActive
@@ -47,6 +48,12 @@ export default function Navbar() {
               {label}
             </NavLink>
           ))}
+          <NavLink
+            to="/dashboard"
+            className="ml-2 px-4 py-2 rounded-xl text-sm font-semibold bg-aura-gold text-aura-bg hover:bg-aura-gold-bright transition-colors"
+          >
+            Open App
+          </NavLink>
         </div>
 
         {/* Wallet button + mobile toggle */}
@@ -73,7 +80,7 @@ export default function Navbar() {
             <NavLink
               key={to}
               to={to}
-              end={to === '/'}
+              end={to === '/dashboard'}
               onClick={() => setMobileOpen(false)}
               className={({ isActive }) =>
                 `flex items-center gap-3 px-6 py-3 text-sm font-medium transition-colors ${

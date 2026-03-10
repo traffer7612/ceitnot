@@ -13,8 +13,8 @@ const localhost1337 = defineChain({
 });
 
 export const config = getDefaultConfig({
-  appName: 'Aura Protocol',
-  projectId: import.meta.env.VITE_WALLETCONNECT_PROJECT_ID ?? 'aura-dev-placeholder',
+  appName: 'Lumina Protocol',
+  projectId: import.meta.env.VITE_WALLETCONNECT_PROJECT_ID ?? 'lumina-dev-placeholder',
   chains: [foundry, localhost1337, sepolia, arbitrum, base],
   transports: {
     [foundry.id]:       http('/rpc'),

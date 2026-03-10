@@ -36,11 +36,13 @@ export default function PositionPage() {
   if (!isConnected) {
     return (
       <div className="page-container flex items-center justify-center min-h-[60vh]">
-        <div className="text-center max-w-sm">
-          <Wallet size={48} className="text-aura-muted mx-auto mb-4" />
+        <div className="text-center max-w-sm w-full flex flex-col items-center">
+          <Wallet size={48} className="text-aura-muted mb-4" />
           <h2 className="text-xl font-semibold mb-2">Connect your wallet</h2>
           <p className="text-aura-muted text-sm mb-6">Connect to view and manage your positions.</p>
-          <ConnectButton />
+          <div className="w-full flex justify-center [&>div]:flex [&>div]:justify-center">
+            <ConnectButton />
+          </div>
         </div>
       </div>
     );

@@ -57,6 +57,18 @@ export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress
   const vaultSymbol  = (tokenData?.[4]?.result as string | undefined) ?? 'VAULT';
   const needsApproval = amountRaw > 0n && allowance < amountRaw;
 
+  const isSepolia = chainId === 11155111;
+  const [mintTxHash, setMintTxHash] = useState<Hash | undefined>();
+  const [mintError, setMintError] = useState('');
+  const { isSuccess: mintConfirmed } = useWaitForTransactionReceipt({ hash: mintTxHash });
+  useEffect(() => {
+    if (mintConfirmed && mintTxHash) {
+      refetchTokenData();
+      setMintTxHash(undefined);
+      setMintError('');
+    }
+  }, [mintConfirmed, mintTxHash, refetchTokenData]);
+
   // Handle tx confirmation
   useEffect(() => {
     if (confirmed && hash) {
@@ -223,6 +235,39 @@ export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress
                 <p className="text-white font-mono mt-1">{formatUnits(shareBalance, 18)}</p>
               </div>
             </div>
+
+            {/* Sepolia: mint test tokens (MockERC20 allows anyone to mint) */}
+            {isSepolia && assetAddress && address && (
+              <div className="mb-5 p-3 bg-aura-gold/10 border border-aura-gold/20 rounded-xl">
+                <p className="text-xs text-aura-muted mb-2">
+                  На тестнете Sepolia нет реального {assetSymbol}. Нажмите кнопку ниже, чтобы наминтить себе тестовые токены (контракт MockERC20 разрешает это любому адресу).
+                </p>
+                <button
+                  type="button"
+                  disabled={isPending || !!mintTxHash}
+                  onClick={async () => {
+                    if (!address || !assetAddress) return;
+                    try {
+                      const h = await writeContractAsync({
+                        address: assetAddress,
+                        abi: erc20Abi,
+                        functionName: 'mint',
+                        args: [address, parseUnits('100', 18)],
+                        ...gasFor(chainId),
+                      });
+                      setMintTxHash(h);
+                    } catch (e) {
+                      setMintError(e instanceof Error ? e.message : String(e));
+                    }
+                  }}
+                  className="w-full py-2 rounded-xl text-sm font-medium bg-aura-gold/20 text-aura-gold hover:bg-aura-gold/30 transition-colors flex items-center justify-center gap-2"
+                >
+                  {(mintTxHash && !mintConfirmed) && <Loader2 size={14} className="animate-spin" />}
+                  {mintTxHash && !mintConfirmed ? 'Ожидание подтверждения…' : `Получить 100 ${assetSymbol}`}
+                </button>
+                {mintError && <p className="text-xs text-aura-danger mt-2">{mintError}</p>}
+              </div>
+            )}
 
             {/* Submit */}
             <button

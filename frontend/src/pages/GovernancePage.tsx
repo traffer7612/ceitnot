@@ -4,7 +4,7 @@ import { parseUnits, formatUnits, type Hash, type Address } from 'viem';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import {
   Vote, Lock, Unlock, Plus, Clock, Users, Gift,
-  CheckCircle, AlertCircle, Loader2, RefreshCw,
+  CheckCircle, AlertCircle, Loader2, RefreshCw, HelpCircle,
 } from 'lucide-react';
 import { erc20Abi, veAuraAbi } from '../abi/auraEngine';
 import { gasFor, TARGET_CHAIN_ID } from '../lib/contracts';
@@ -73,7 +73,7 @@ export default function GovernancePage() {
   const currentDelegate = (readData?.[4]?.result as Address | undefined);
   const totalLocked   = (readData?.[5]?.result as bigint | undefined) ?? 0n;
   const pendingRev    = (readData?.[6]?.result as bigint | undefined) ?? 0n;
-  const tokenSymbol   = (readData?.[7]?.result as string | undefined) ?? 'AURA';
+  const tokenSymbol   = (readData?.[7]?.result as string | undefined) ?? 'LUMINA';
 
   const hasLock       = lockedAmount > 0n;
   const lockExpired   = hasLock && BigInt(Math.floor(Date.now() / 1000)) >= unlockTime;
@@ -229,11 +229,13 @@ export default function GovernancePage() {
   if (!isConnected) {
     return (
       <div className="page-container flex items-center justify-center min-h-[60vh]">
-        <div className="text-center max-w-sm">
-          <Vote size={48} className="text-aura-muted mx-auto mb-4" />
+        <div className="text-center max-w-sm w-full flex flex-col items-center">
+          <Vote size={48} className="text-aura-muted mb-4" />
           <h2 className="text-xl font-semibold mb-2">Connect your wallet</h2>
-          <p className="text-aura-muted text-sm mb-6">Connect to lock AURA and participate in governance.</p>
-          <ConnectButton />
+          <p className="text-aura-muted text-sm mb-6">Connect to lock LUMINA and participate in governance.</p>
+          <div className="w-full flex justify-center [&>div]:flex [&>div]:justify-center">
+            <ConnectButton />
+          </div>
         </div>
       </div>
     );
@@ -247,7 +249,7 @@ export default function GovernancePage() {
           <p className="text-aura-warning font-medium">Governance contracts not configured</p>
           <p className="text-aura-muted text-sm mt-2">
             Set <code className="font-mono text-aura-warning/80">VITE_AURA_TOKEN_ADDRESS</code> and{' '}
-            <code className="font-mono text-aura-warning/80">VITE_VE_AURA_ADDRESS</code> in your <code>.env</code>.
+            <code className="font-mono text-aura-warning/80">VITE_VE_AURA_ADDRESS</code> (governance token) in your <code>.env</code>.
           </p>
         </div>
       </div>
@@ -264,7 +266,7 @@ export default function GovernancePage() {
               Governance
             </span>
           </h1>
-          <p className="page-subtitle">Lock AURA → get veAURA → vote &amp; earn revenue</p>
+          <p className="page-subtitle">Lock LUMINA → get veLUMINA → vote &amp; earn revenue</p>
         </div>
         <button onClick={() => refetch()} className="btn-ghost flex items-center gap-2 text-sm">
           <RefreshCw size={14} /> Refresh
@@ -297,14 +299,27 @@ export default function GovernancePage() {
         </div>
       )}
 
+      {/* How to get LUMINA (when balance is zero) */}
+      {auraBalance === 0n && (
+        <div className="mb-6 p-4 rounded-xl bg-aura-gold/10 border border-aura-gold/20 flex gap-3">
+          <HelpCircle size={20} className="text-aura-gold shrink-0 mt-0.5" />
+          <div className="text-sm">
+            <p className="font-medium text-white mb-1">Как получить LUMINA?</p>
+            <p className="text-aura-muted">
+              В этом приложении LUMINA только блокируется и используется для голосования. Купить или обменять LUMINA здесь нельзя: на мейннете получите токены на DEX (Uniswap, Camelot и т.д.) или бирже и переведите в кошелёк. На тестнете (Sepolia) или localhost тестовые LUMINA появляются при полном деплое: скрипт <code className="text-aura-gold/90">DeployFullSepolia</code> минтит 10 000 000 LUMINA на адрес деплоера — если вы запускали деплой с этого кошелька, токены пришли оттуда.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Stats row */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         <div className="stat-card">
-          <span className="stat-label">Your AURA Balance</span>
+          <span className="stat-label">Your LUMINA Balance</span>
           <p className="stat-value font-mono">{formatWad(auraBalance, 2)}</p>
         </div>
         <div className="stat-card">
-          <span className="stat-label">Your Locked AURA</span>
+          <span className="stat-label">Your Locked LUMINA</span>
           <p className="stat-value font-mono">{formatWad(lockedAmount, 2)}</p>
         </div>
         <div className="stat-card">
@@ -363,7 +378,7 @@ export default function GovernancePage() {
           {!hasLock && (
             <div className="card p-5">
               <h2 className="font-semibold text-lg flex items-center gap-2 mb-4">
-                <Lock size={18} className="text-aura-gold" /> Lock AURA
+                <Lock size={18} className="text-aura-gold" /> Lock LUMINA
               </h2>
 
               <div className="mb-4">
@@ -553,6 +568,11 @@ export default function GovernancePage() {
               <span className="text-aura-muted-2 uppercase tracking-wider">veAURA:</span>{' '}
               <span className="font-mono">{formatAddress(VE_AURA)}</span>
             </p>
+            {(chainId === 31337 || chainId === 11155111) && (
+              <p className="pt-2 text-aura-gold/80">
+                Тестовые AURA: наминчены скриптом DeployFullSepolia (10M) на адрес деплоера при запуске деплоя.
+              </p>
+            )}
           </div>
         </div>
       </div>
