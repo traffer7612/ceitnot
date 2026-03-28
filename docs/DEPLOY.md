@@ -382,6 +382,104 @@ forge script script/DeployProduction.s.sol:DeployProduction --rpc-url https://..
 
 В выводе будут строки `AURA_ENGINE_ADDRESS=0x...` и `ORACLE_RELAY_ADDRESS=0x...`. Адрес движка запишите в `backend\.env`.
 
+### Шаг 2a. Полный боевой деплой с CDP (`DeployFullProduction.s.sol`)
+
+Если нужен **тот же стек, что на Sepolia** (не legacy USDC в движке): **aUSD** как долг, **CDP** (`setMintableDebtToken(true)`), **PSM** (aUSD ↔ USDC), **Router**, **Treasury**, **AuraToken + VeAura + Governor + Timelock** — используйте скрипт `script/DeployFullProduction.s.sol`.
+
+**Сначала репетиция (рекомендуется):** на **Ethereum Sepolia** тот же полный стек без «боевых» денег — скрипт `script/DeployFullSepolia.s.sol` (моки wstETH/USDC + реальный Chainlink ETH/USD Sepolia). Симуляция без записи в сеть:
+
+```powershell
+cd F:\aura
+forge script script/DeployFullSepolia.s.sol:DeployFullSepolia --rpc-url https://ethereum-sepolia.publicnode.com
+```
+
+Реальный деплой на Sepolia (нужны **Sepolia ETH** и приватный ключ):
+
+```powershell
+forge script script/DeployFullSepolia.s.sol:DeployFullSepolia --rpc-url https://ethereum-sepolia.publicnode.com --broadcast --private-key ВАШ_КЛЮЧ
+```
+
+**Проверка `COLLATERAL_VAULT` до `DeployFullProduction`:** `AuraMarketRegistry.addMarket` внутри вызывает `IERC4626(vault).convertToAssets(1e18)` и `oracle.getLatestPrice()`. Если вызов ревертится или цена 0 — получите `Registry__InvalidParams`. Проверьте с тем же RPC, что и деплой:
+
+```powershell
+cast call ВАШ_VAULT "convertToAssets(uint256)(uint256)" 1000000000000000000 --rpc-url https://arb1.arbitrum.io/rpc
+cast call ВАШ_CHAINLINK_FEED "latestRoundData()(uint80,int256,uint256,uint256,uint80)" --rpc-url https://arb1.arbitrum.io/rpc
+```
+(ответ по фиду должен быть с положительной ценой `answer`; после деплоя `OracleRelay` отдаёт цену через `getLatestPrice()`.)
+
+Адрес **wstETH на Arbitrum** `0x5979D7b546E38E414F7E9822514be443A4800529` в текущем состоянии сети **не проходит** первую проверку (view `convertToAssets(1e18)` ревертится) — для `DeployFullProduction` нужен контракт, который **реально реализует ERC-4626** для этих static-call (часто это отдельный vault/wrapper, а не произвольный мостовой токен).
+
+**Обязательные переменные окружения:**
+
+| Переменная | Назначение |
+|------------|------------|
+| `COLLATERAL_VAULT` | Адрес ERC-4626 залога (например wstETH на Arbitrum) |
+| `USDC_ADDRESS` | USDC для PSM (на Arbitrum нативный USDC — **6 decimals**) |
+| `CHAINLINK_FEED` | Основной Chainlink-агрегатор для `OracleRelay` |
+
+**Опционально:** `FALLBACK_FEED`, `TWAP_PERIOD`, `PSM_USDC_SEED` (сырое количество wei USDC для перевода с кошелька деплоера в PSM ликвидность swapOut; `0` = не переводить), `GOVERNANCE_TOKEN_MINT` (WAD, по умолчанию 10M токенов governance деплоеру), `ENGINE_HEARTBEAT`, `ENGINE_TIMELOCK`, `TIN_BPS`, `TOUT_BPS`.
+
+**Пример (Arbitrum One — только после проверки vault и фида):**
+
+Подставьте **свой** `COLLATERAL_VAULT` (прошедший `cast call … convertToAssets` выше) и **Chainlink-агрегатор**, цена которого соответствует залогу (часто ETH/USD для ETH-номинированного залога). Нативный USDC Arbitrum и популярный ETH/USD-фид:
+
+```powershell
+cd F:\aura
+
+$env:COLLATERAL_VAULT = "0x…"   # ваш ERC-4626 vault (не брать наугад — см. preflight выше)
+$env:USDC_ADDRESS     = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
+$env:CHAINLINK_FEED   = "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612"   # ETH/USD на Arbitrum One (data.chain.link)
+$env:FALLBACK_FEED    = "0x0000000000000000000000000000000000000000"
+$env:TWAP_PERIOD      = "0"
+# Опционально: сид PSM в «сырых» единицах USDC (6 decimals), напр. 1_000_000 = 1 USDC:
+# $env:PSM_USDC_SEED = "1000000"
+
+# Сначала сухой прогон (в сеть не пишет):
+forge script script/DeployFullProduction.s.sol:DeployFullProduction --rpc-url https://arb1.arbitrum.io/rpc
+
+# Затем боевой деплой (нужны ETH Arbitrum на газ и ключ):
+forge script script/DeployFullProduction.s.sol:DeployFullProduction `
+  --rpc-url https://arb1.arbitrum.io/rpc `
+  --broadcast `
+  --private-key ВАШ_ПРИВАТНЫЙ_КЛЮЧ
+```
+
+В логе будут адреса **ENGINE**, **REGISTRY**, **ORACLE**, **AUSD**, **PSM**, **GOVERNANCE** и т.д. Пропишите их в `frontend/.env` и `backend/.env` (в т.ч. `VITE_AUSD_ADDRESS`, `VITE_PSM_ADDRESS`, токены governance при использовании на фронте).
+
+**Важно:**
+
+- **Без `--broadcast`** скрипт только симулирует (gas report), в сеть не идёт.
+- После CDP-деплоя **не нужно** заливать USDC на движок для выдачи займов: borrow **минтит aUSD**. USDC на движке нужен только в сценарии **legacy** (`DeployProduction`).
+- В `AuraPSM` комментарий в коде про 1:1 в **сырых** единицах: у **нативного USDC 6 decimals**, у **aUSD — 18**. Перед продакшеном проверьте UX/математику свопов; CDP borrow/repay не зависят от PSM.
+- Админ изначально — кошелёк деплоера; для прода заложите перенос прав на **multisig** / timelock отдельными транзакциями.
+
+### Шаг 2b. Полный CDP-стек на Arbitrum One (`DeployFullArbitrum.s.sol`)
+
+Если нужен **Arbitrum One (42161)** с тем же составом, что у полного Sepolia-деплоя, без подбора внешнего ERC-4626: скрипт `script/DeployFullArbitrum.s.sol` деплоит **мок wstETH + MockVault4626** (реестр принимает рынок), **реальный нативный USDC** для PSM и **Chainlink ETH/USD** Arbitrum (`0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612`). Так обходится проблема мостового wstETH `0x5979…`, у которого `convertToAssets(1e18)` в view ревертится.
+
+**Опциональные переменные:** `PSM_USDC_SEED` (сырые единицы USDC, **6 decimals** — с баланса деплоера в PSM), `GOVERNANCE_TOKEN_MINT`, `ENGINE_HEARTBEAT`, `ENGINE_TIMELOCK`.
+
+Симуляция (в сеть не пишет):
+
+```powershell
+cd F:\aura
+forge script script/DeployFullArbitrum.s.sol:DeployFullArbitrum --rpc-url https://arb1.arbitrum.io/rpc
+```
+
+Боевой деплой (нужны **ETH Arbitrum** на газ и ключ; ориентир по симуляции ~0,001 ETH на комиссии, уточняйте по сети):
+
+```powershell
+# опционально: положить в PSM 10 USDC для swapOut (10 * 10^6)
+# $env:PSM_USDC_SEED = "10000000"
+
+forge script script/DeployFullArbitrum.s.sol:DeployFullArbitrum `
+  --rpc-url https://arb1.arbitrum.io/rpc `
+  --broadcast `
+  --private-key ВАШ_ПРИВАТНЫЙ_КЛЮЧ
+```
+
+Дальше пропишите адреса из лога во фронт (`VITE_CHAIN_ID=42161`, engine, registry, ausd, psm, aura, veAura и т.д.). У **PSM** и части UI учитывайте **6 decimals** у нативного USDC.
+
 #### Пример: Arbitrum One (готовые адреса)
 
 Если деплоите на **Arbitrum One** с USDC, ETH/USD-фидом и wstETH как залогом:
@@ -393,7 +491,8 @@ forge script script/DeployProduction.s.sol:DeployProduction --rpc-url https://..
 ```powershell
 cd F:\aura
 
-$env:COLLATERAL_VAULT = "0x5979D7b546E38E414F7E9822514be443A4800529"
+# COLLATERAL_VAULT должен пройти cast call convertToAssets(1e18); wstETH 0x5979… на Arb часто НЕ подходит — см. шаг 2a.
+$env:COLLATERAL_VAULT = "0x…"
 $env:USDC_ADDRESS = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
 $env:CHAINLINK_FEED = "0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612"
 $env:FALLBACK_FEED = "0x0000000000000000000000000000000000000000"
@@ -426,9 +525,61 @@ cast send USDC_ADDRESS "transfer(address,uint256)" AURA_ENGINE_ADDRESS 100000000
 
 ### Краткий чеклист боевого запуска
 
+**Вариант A — legacy (долг = USDC из баланса движка):**
+
 1. Выбрать сеть (Ethereum / Arbitrum / Base).
 2. Подготовить адреса: USDC, ERC-4626 vault, оракул (Chainlink или адаптер).
 3. Выставить `COLLATERAL_VAULT`, `USDC_ADDRESS`, `CHAINLINK_FEED` и выполнить `DeployProduction`.
 4. Перевести USDC на адрес движка.
 5. Прописать движок в `backend\.env`, при необходимости добавить сеть во фронт и бэкенд.
 6. На фронте учесть 6 decimals для USDC (Borrow/Repay и отображение).
+
+**Вариант B — CDP + aUSD + PSM + governance (как на Sepolia):**
+
+1. Те же сетевые адреса vault / USDC / Chainlink, плюс газовый ETH на деплоере.
+2. Выполнить `DeployFullProduction` (см. шаг 2a), при необходимости задать `PSM_USDC_SEED` и лимиты.
+3. Прописать в `.env` адреса **engine, registry, ausd, psm**, governance при использовании UI.
+4. USDC на движок для borrow **не** требуется; при необходимости пополнить **PSM** USDC для swapOut.
+
+---
+
+## Деплой фронтенда на Vercel
+
+Фронтенд — **Vite + React** в каталоге `frontend`. В **корне репозитория** лежит `vercel.json`: Vercel сам выполняет `cd frontend && npm install`, `cd frontend && npm run build` и отдаёт статику из `frontend/dist`. **Root Directory** в настройках проекта Vercel оставьте **корень репо** (не указывайте только `frontend`).
+
+### Подключение проекта
+
+1. Зайдите на [vercel.com](https://vercel.com) → **Add New…** → **Project** → импортируйте Git-репозиторий.
+2. Сборку не нужно настраивать вручную, если в корне есть `vercel.json` (команды подставятся из него).
+3. После первого деплоя привяжите домен: **Project → Settings → Domains**.
+
+### Переменные окружения (обязательно для клиента)
+
+Vite подставляет в бандл только переменные с префиксом **`VITE_`**. Задайте их в **Project → Settings → Environment Variables**, область **Production** (и при необходимости **Preview** / **All Environments**).
+
+Скопируйте значения из `frontend/.env` в репозитории (или из своего боевого списка адресов):
+
+| Переменная | Пример / назначение |
+|------------|---------------------|
+| `VITE_ENGINE_ADDRESS` | Адрес Aura Engine на Sepolia. Проверьте строку целиком: в середине должно быть **`…F353C…`**, не `…F33C…` (иначе адрес неверный и маркеты не загрузятся). |
+| `VITE_REGISTRY_ADDRESS` | Реестр маркетов |
+| `VITE_AURA_TOKEN_ADDRESS` | Токен AURA |
+| `VITE_VE_AURA_ADDRESS` | veAURA |
+| `VITE_AUSD_ADDRESS` | aUSD (CDP) |
+| `VITE_PSM_ADDRESS` | PSM |
+| `VITE_USDC_ADDRESS` | USDC (Sepolia) |
+| `VITE_CHAIN_ID` | `11155111` для Sepolia |
+| `VITE_WALLETCONNECT_PROJECT_ID` | ID проекта [WalletConnect Cloud](https://cloud.walletconnect.com/) |
+
+**RPC:** в актуальной версии фронта по умолчанию используются **публичные** Sepolia RPC (цепочка fallback в коде). Переменную **`VITE_SEPOLIA_RPC_URL` в проде обычно не задают**; если задаёте — только полный URL вида `https://…` (и при необходимости разрешите домен в allowlist провайдера RPC).
+
+После **любого** изменения переменных нужен **новый деплой** (Redeploy): значения `VITE_*` встраиваются на этапе **сборки**, а не в рантайме.
+
+### Маршрутизация и `/rpc`
+
+В `vercel.json` настроены SPA-rewrite на `index.html` и прокси **`/rpc`** на публичный Sepolia RPC (запасной путь, если клиент ходит на относительный `/rpc`). Основной прод-клиент в коде ходит на публичные URL напрямую.
+
+### Проверка после выката
+
+- Откройте сайт в **режиме инкогнито** или с жёстким обновлением (**Ctrl+F5**), чтобы не кешировался старый JS.
+- Страница **Markets** должна показывать число маркетов с реестра; если пусто — сверьте `VITE_ENGINE_ADDRESS` / `VITE_REGISTRY_ADDRESS` и что деплой собран **после** сохранения переменных в Vercel.
