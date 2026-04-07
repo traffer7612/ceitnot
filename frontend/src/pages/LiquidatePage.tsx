@@ -118,7 +118,7 @@ export default function LiquidatePage() {
     <div className="page-container max-w-3xl mx-auto">
       <div className="page-header">
         <h1 className="page-title">
-          <span className="text-transparent bg-clip-text bg-gradient-to-r from-ceitnot-gold to-ceitnot-accent">Liquidate</span>
+          <span className="page-title-accent">Liquidate</span>
         </h1>
         <p className="page-subtitle">Look up any address and liquidate under-collateralised positions.</p>
       </div>
@@ -211,18 +211,18 @@ export default function LiquidatePage() {
                   </div>
                   <div>
                     <p className="stat-label">Collateral Shares</p>
-                    <p className="font-mono text-white mt-1">{formatWad(shares, 4)}</p>
+                    <p className="font-mono text-ceitnot-ink mt-1">{formatWad(shares, 4)}</p>
                   </div>
                   <div>
                     <p className="stat-label">Collateral Value</p>
-                    <p className="font-mono text-white mt-1">{formatWad(value, 4)}</p>
+                    <p className="font-mono text-ceitnot-ink mt-1">{formatWad(value, 4)}</p>
                   </div>
                 </div>
 
                 {isSelected && (
                   <div className="mt-4 pt-4 border-t border-ceitnot-border space-y-3">
                     <p className="text-xs text-ceitnot-muted">
-                      Max repay (close factor {Number(closeFactor) / 100}%): <span className="text-white font-mono">{formatWad(maxRepay, 4)}</span>
+                      Max repay (close factor {Number(closeFactor) / 100}%): <span className="text-ceitnot-ink font-mono">{formatWad(maxRepay, 4)}</span>
                     </p>
                     <div className="flex gap-2">
                       <input

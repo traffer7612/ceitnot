@@ -53,7 +53,7 @@ export default function PositionPage() {
       <div className="page-header flex items-end justify-between">
         <div>
           <h1 className="page-title">
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-ceitnot-gold to-ceitnot-accent">Position</span>
+            <span className="page-title-accent">Position</span>
           </h1>
           <p className="page-subtitle text-xs font-mono">{address?.slice(0, 6)}…{address?.slice(-4)}</p>
         </div>
@@ -248,7 +248,7 @@ export default function PositionPage() {
                   <div className="px-5 py-3 border-b border-ceitnot-border">
                     <div className="flex justify-between text-xs text-ceitnot-muted mb-1">
                       <span>LTV utilization</span>
-                      <span className="font-mono text-white">{utilPct.toFixed(1)}%  <span className="text-ceitnot-muted">of {ltv?.toFixed(0)}% max</span></span>
+                      <span className="font-mono text-ceitnot-ink">{utilPct.toFixed(1)}%  <span className="text-ceitnot-muted">of {ltv?.toFixed(0)}% max</span></span>
                     </div>
                     <div className="h-1.5 bg-ceitnot-border rounded-full overflow-hidden">
                       <div
@@ -265,11 +265,11 @@ export default function PositionPage() {
                 <div className="px-5 py-4 grid grid-cols-3 gap-4 text-sm border-b border-ceitnot-border">
                   <div>
                     <p className="stat-label">Collateral Shares</p>
-                    <p className="font-mono text-white mt-1">{formatWad(pos.shares, 4)}</p>
+                    <p className="font-mono text-ceitnot-ink mt-1">{formatWad(pos.shares, 4)}</p>
                   </div>
                   <div>
                     <p className="stat-label">Collateral Value</p>
-                    <p className="font-mono text-white mt-1">{formatWad(pos.value, 4)}</p>
+                    <p className="font-mono text-ceitnot-ink mt-1">{formatWad(pos.value, 4)}</p>
                   </div>
                   <div>
                     <p className="stat-label">Outstanding Debt</p>

@@ -59,6 +59,7 @@ export function useContractAddresses() {
 export function gasFor(chainId: number | undefined) {
   if (chainId === 31337 || chainId === 1337) return { gas: 8_000_000n };
   if (chainId === 42161)                     return { gas: 300_000n };
+  if (chainId === 421614)                    return { gas: 300_000n };
   if (chainId === 11155111)                  return { gas: 500_000n };
   return {};
 }

@@ -315,18 +315,18 @@ export default function ActionModal({
               {/* Balance hints */}
               {action === 'deposit' && (
                 <p className="text-xs text-ceitnot-muted mt-1">
-                  Wallet shares: <span className="text-white font-mono">{formatUnits(walletShares, 18)}</span>
+                  Wallet shares: <span className="text-ceitnot-ink font-mono">{formatUnits(walletShares, 18)}</span>
                 </p>
               )}
               {action === 'withdraw' && sharesBalance !== undefined && (
                 <p className="text-xs text-ceitnot-muted mt-1">
-                  Deposited shares: <span className="text-white font-mono">{formatUnits(sharesBalance, 18)}</span>
+                  Deposited shares: <span className="text-ceitnot-ink font-mono">{formatUnits(sharesBalance, 18)}</span>
                 </p>
               )}
               {action === 'borrow' && (
                 <p className="text-xs text-ceitnot-muted mt-1">
-                  Collateral value: <span className="text-white font-mono">{formatUnits(collateralValue, 18)}</span>
-                  {' · '}Max borrow (80% LTV): <span className="text-white font-mono">
+                  Collateral value: <span className="text-ceitnot-ink font-mono">{formatUnits(collateralValue, 18)}</span>
+                  {' · '}Max borrow (80% LTV): <span className="text-ceitnot-ink font-mono">
                     {formatUnits((collateralValue * 8000n / 10000n) - (debtBalance ?? 0n) > 0n ? (collateralValue * 8000n / 10000n) - (debtBalance ?? 0n) : 0n, 18)}
                   </span>
                   {!!debtBalance && debtBalance > 0n && (
@@ -336,8 +336,8 @@ export default function ActionModal({
               )}
               {action === 'repay' && debtBalance !== undefined && debtBalance > 0n && (
                 <p className="text-xs text-ceitnot-muted mt-1">
-                  Outstanding debt: <span className="text-white font-mono">{formatUnits(debtBalance, 18)}</span>
-                  {' · '}Wallet USDC: <span className="text-white font-mono">{formatUnits(walletDebtToken, 18)}</span>
+                  Outstanding debt: <span className="text-ceitnot-ink font-mono">{formatUnits(debtBalance, 18)}</span>
+                  {' · '}Wallet USDC: <span className="text-ceitnot-ink font-mono">{formatUnits(walletDebtToken, 18)}</span>
                 </p>
               )}
             </div>

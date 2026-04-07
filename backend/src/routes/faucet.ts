@@ -1,8 +1,15 @@
 import { Router } from "express";
-import { createPublicClient, createWalletClient, formatEther, http, parseEther } from "viem";
+import { createPublicClient, createWalletClient, formatEther, http, parseEther, defineChain } from "viem";
 import type { Address } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { foundry, sepolia } from "viem/chains";
+
+const arbitrumSepolia = defineChain({
+  id: 421614,
+  name: "Arbitrum Sepolia",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: { default: { http: ["https://sepolia-rollup.arbitrum.io/rpc"] } },
+});
 
 export const faucetRouter = Router();
 
@@ -14,6 +21,8 @@ const anvilRpc = () => process.env.FAUCET_RPC_URL ?? process.env.RPC_URL ?? "htt
 function getRpc(chainId: number): string {
   if (chainId === 31337) return anvilRpc();
   if (chainId === 11155111) return process.env.RPC_URL ?? "https://ethereum-sepolia.publicnode.com";
+  if (chainId === 421614)
+    return process.env.RPC_URL ?? arbitrumSepolia.rpcUrls.default.http[0];
   return process.env.RPC_URL ?? "";
 }
 
@@ -95,12 +104,16 @@ faucetRouter.post("/mint-governance", async (req, res) => {
 
   const rpc = getRpc(chainId);
   if (!rpc) {
-    return res.status(400).json({ error: "Unsupported chainId (use 31337 or 11155111)" });
+    return res.status(400).json({ error: "Unsupported chainId (use 31337, 11155111, or 421614)" });
   }
 
-  const chain = chainId === 11155111 ? sepolia : foundry;
-  if (chainId !== 31337 && chainId !== 11155111) {
-    return res.status(400).json({ error: "Governance token faucet only available for Anvil (31337) or Sepolia (11155111)" });
+  const chain =
+    chainId === 11155111 ? sepolia : chainId === 421614 ? arbitrumSepolia : foundry;
+  if (chainId !== 31337 && chainId !== 11155111 && chainId !== 421614) {
+    return res.status(400).json({
+      error:
+        "Governance token faucet only available for Anvil (31337), Ethereum Sepolia (11155111), or Arbitrum Sepolia (421614)",
+    });
   }
 
   try {
@@ -117,7 +130,7 @@ faucetRouter.post("/mint-governance", async (req, res) => {
       functionName: "mint",
       args: [address as Address, GOVERNANCE_TOKEN_FAUCET_AMOUNT],
       gas: 200_000n,
-      ...(chainId === 11155111
+      ...(chainId === 11155111 || chainId === 421614
         ? { maxFeePerGas: 50_000_000_000n, maxPriorityFeePerGas: 2_000_000_000n }
         : {}),
     });

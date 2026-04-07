@@ -200,7 +200,7 @@ export default function SwapPage() {
     <div className="page-container max-w-lg mx-auto">
       <div className="page-header text-center">
         <h1 className="page-title">
-          <span className="text-transparent bg-clip-text bg-gradient-to-r from-ceitnot-gold to-ceitnot-accent">Swap</span>
+          <span className="page-title-accent">Swap</span>
         </h1>
         <p className="page-subtitle">Exchange aUSD ↔ USDC at 1:1 via the Peg Stability Module</p>
       </div>
@@ -221,9 +221,9 @@ export default function SwapPage() {
               value={amount}
               onChange={e => { setAmount(e.target.value); setHash(undefined); setErrMsg(''); }}
               placeholder="0.0"
-              className="bg-transparent text-xl font-mono flex-1 outline-none w-0"
+              className="bg-transparent text-xl font-mono flex-1 outline-none w-0 text-ceitnot-ink placeholder-ceitnot-muted"
             />
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-ceitnot-card border border-ceitnot-border shrink-0">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-ceitnot-surface-2 border border-ceitnot-border shrink-0">
               <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
                 direction === 'in' ? 'bg-blue-500/20 text-blue-400' : 'bg-ceitnot-gold/20 text-ceitnot-gold'
               }`}>
@@ -238,7 +238,7 @@ export default function SwapPage() {
         <div className="flex justify-center -my-1 relative z-10">
           <button
             onClick={flipDirection}
-            className="w-9 h-9 rounded-full border-2 border-ceitnot-border bg-ceitnot-card flex items-center justify-center hover:border-ceitnot-gold/50 hover:text-ceitnot-gold transition-colors"
+            className="w-9 h-9 rounded-full border-2 border-ceitnot-border bg-ceitnot-surface-2 flex items-center justify-center hover:border-ceitnot-gold/50 hover:text-ceitnot-gold transition-colors text-ceitnot-ink"
           >
             <ArrowDownUp size={16} />
           </button>
@@ -258,7 +258,7 @@ export default function SwapPage() {
                 ? Number(formatUnits(estimatedOutWei, direction === 'in' ? 18 : peggedDec)).toLocaleString(undefined, { maximumFractionDigits: 4 })
                 : '0.0'}
             </span>
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-ceitnot-card border border-ceitnot-border shrink-0">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-ceitnot-surface-2 border border-ceitnot-border shrink-0">
               <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
                 direction === 'out' ? 'bg-blue-500/20 text-blue-400' : 'bg-ceitnot-gold/20 text-ceitnot-gold'
               }`}>
@@ -271,7 +271,7 @@ export default function SwapPage() {
 
         {/* Details */}
         {parsedAmount > 0n && (
-          <div className="mt-4 p-3 rounded-lg bg-ceitnot-surface/50 border border-ceitnot-border space-y-1.5 text-xs">
+          <div className="mt-4 p-3 rounded-lg bg-ceitnot-surface-2/70 border border-ceitnot-border space-y-1.5 text-xs">
             <div className="flex justify-between">
               <span className="text-ceitnot-muted">Rate</span>
               <span>1 {inputToken} = 1 {outputToken}</span>

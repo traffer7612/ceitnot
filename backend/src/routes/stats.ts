@@ -1,6 +1,13 @@
 import { Router } from "express";
-import { createPublicClient, http, formatEther, type Chain } from "viem";
+import { createPublicClient, http, formatEther, defineChain, type Chain } from "viem";
 import { arbitrum, base, sepolia, foundry } from "viem/chains";
+
+const arbitrumSepolia = defineChain({
+  id: 421614,
+  name: "Arbitrum Sepolia",
+  nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+  rpcUrls: { default: { http: ["https://sepolia-rollup.arbitrum.io/rpc"] } },
+});
 
 const CEITNOT_ENGINE_READ_ABI = [
   { inputs: [], name: "totalDebt", outputs: [{ name: "", type: "uint256" }], stateMutability: "view", type: "function" },
@@ -18,6 +25,7 @@ function getRpc(chainId: number): string {
   const rpcs: Record<number, string> = {
     11155111: "https://ethereum-sepolia.publicnode.com",
     42161: arbitrum.rpcUrls.default.http[0],
+    421614: arbitrumSepolia.rpcUrls.default.http[0],
     8453: base.rpcUrls.default.http[0],
   };
   return rpcs[chainId] ?? "";
@@ -27,6 +35,7 @@ const chains: Record<number, Chain> = {
   31337: foundry,
   11155111: sepolia,
   42161: arbitrum,
+  421614: arbitrumSepolia,
   8453: base,
 };
 

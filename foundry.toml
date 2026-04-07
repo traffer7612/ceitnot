@@ -24,10 +24,12 @@ fail_on_revert   = false
 deny = "never"
 
 [rpc_endpoints]
-mainnet  = "${ETH_RPC_URL}"
-arbitrum = "${ARBITRUM_RPC_URL}"
-base     = "${BASE_RPC_URL}"
-sepolia  = "https://ethereum-sepolia.publicnode.com"
+mainnet           = "${ETH_RPC_URL}"
+arbitrum          = "${ARBITRUM_RPC_URL}"
+arbitrum_sepolia  = "https://sepolia-rollup.arbitrum.io/rpc"
+base              = "${BASE_RPC_URL}"
+sepolia           = "https://ethereum-sepolia.publicnode.com"
 
 [etherscan]
-arbitrum = { key = "${ARBISCAN_API_KEY}", url = "https://api.arbiscan.io/api" }
+arbitrum          = { key = "${ARBISCAN_API_KEY}", url = "https://api.arbiscan.io/api" }
+arbitrum_sepolia  = { key = "${ARBISCAN_API_KEY}", url = "https://api-sepolia.arbiscan.io/api" }

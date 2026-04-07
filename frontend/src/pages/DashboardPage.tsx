@@ -58,9 +58,7 @@ export default function DashboardPage() {
       {/* Hero */}
       <div className="mb-10">
         <h1 className="text-4xl sm:text-5xl font-bold tracking-tight">
-          <span className="text-transparent bg-clip-text bg-gradient-to-r from-ceitnot-gold to-ceitnot-accent">
-            Yield-Backed Credit
-          </span>
+          <span className="page-title-accent">Yield-Backed Credit</span>
         </h1>
         <p className="text-ceitnot-muted-2 text-lg mt-3 max-w-2xl">
           Deposit ERC-4626 vault shares as collateral and borrow against them across isolated markets — without selling your yield.

@@ -30,6 +30,24 @@ const WEEK = 7 * 24 * 3600;
 const FEED_WINDOW_SECONDS = 90 * 24 * 3600; // 90 days — was 10d; short window hid older active votes
 const ACTIVITY_INITIAL_COUNT = 5;
 
+/** Percent string (e.g. "90" = 90%) → basis points for registry */
+function govPctToBps(v: string): number | undefined {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return undefined;
+  return Math.round(n * 100);
+}
+
+/** WAD (18 decimals) caps; empty → 0 */
+function govParseWadCap(v: string): bigint {
+  const t = v.trim();
+  if (!t) return 0n;
+  try {
+    return parseUnits(t, 18);
+  } catch {
+    return 0n;
+  }
+}
+
 /**
  * `getLogs` block span: on Arbitrum/Base blocks are seconds apart, so 300k blocks is only ~1–2 days
  * and ProposalCreated disappears from the feed. Use chain-aware lookback.
@@ -37,6 +55,7 @@ const ACTIVITY_INITIAL_COUNT = 5;
 function governanceLogsFromBlock(latestBlock: bigint, chainId: number): bigint {
   const spanByChain: Record<number, bigint> = {
     42161: 18_000_000n,   // Arbitrum One — ~weeks of history at typical L2 cadence
+    421614: 18_000_000n,  // Arbitrum Sepolia — L2 cadence similar to One
     8453: 6_000_000n,     // Base
     11155111: 400_000n,   // Sepolia ~12s blocks → ~8 weeks
   };
@@ -47,6 +66,7 @@ function governanceLogsFromBlock(latestBlock: bigint, chainId: number): bigint {
 function governanceLogsDeepFromBlock(latestBlock: bigint, chainId: number): bigint {
   const spanByChain: Record<number, bigint> = {
     42161: 30_000_000n,
+    421614: 30_000_000n,
     8453: 12_000_000n,
     11155111: 800_000n,
   };
@@ -130,8 +150,17 @@ export default function GovernancePage() {
   const [newLiqThreshold, setNewLiqThreshold] = useState('93');
   const [newLiqPenalty, setNewLiqPenalty] = useState('3');
   /** Which single-action template feeds propose / queue / execute (must stay the same for a given proposal). */
-  const [govProposalKind, setGovProposalKind] = useState<'market' | 'addPsmMinter'>('market');
+  const [govProposalKind, setGovProposalKind] = useState<'marketRisk' | 'addMarket' | 'addPsmMinter'>('marketRisk');
   const [newPsmMinterAddress, setNewPsmMinterAddress] = useState('');
+  const [addMarketVault, setAddMarketVault] = useState('');
+  const [addMarketOracle, setAddMarketOracle] = useState('');
+  const [addMarketLtv, setAddMarketLtv] = useState('90');
+  const [addMarketLiqTh, setAddMarketLiqTh] = useState('93');
+  const [addMarketLiqPen, setAddMarketLiqPen] = useState('3');
+  const [addMarketSupplyCap, setAddMarketSupplyCap] = useState('');
+  const [addMarketBorrowCap, setAddMarketBorrowCap] = useState('');
+  const [addMarketIsolated, setAddMarketIsolated] = useState(false);
+  const [addMarketIsoBorrowCap, setAddMarketIsoBorrowCap] = useState('');
   const [proposalFeed, setProposalFeed] = useState<ProposalFeedItem[]>([]);
   const [activityFeed, setActivityFeed] = useState<GovernanceActivityItem[]>([]);
   const [proposalTitleMap, setProposalTitleMap] = useState<Record<string, string>>({});
@@ -166,7 +195,7 @@ export default function GovernancePage() {
 
   const proposalId = proposalIdInput.trim() ? BigInt(proposalIdInput.trim()) : undefined;
   const hasGovConfig = !!GOVERNOR && (!!registry || !!AUSD);
-  const marketCalldata =
+  const marketRiskCalldata =
     GOVERNOR && registry
       ? encodeFunctionData({
         abi: marketRegistryAbi,
@@ -179,6 +208,36 @@ export default function GovernancePage() {
         ],
       })
       : '0x';
+  const trimmedVault = addMarketVault.trim();
+  const trimmedOracle = addMarketOracle.trim();
+  const addLtvBps = govPctToBps(addMarketLtv);
+  const addLiqBps = govPctToBps(addMarketLiqTh);
+  const addPenBps = govPctToBps(addMarketLiqPen);
+  const addMarketCalldataEncoded =
+    GOVERNOR &&
+    registry &&
+    isAddress(trimmedVault as Address) &&
+    isAddress(trimmedOracle as Address) &&
+    addLtvBps !== undefined &&
+    addLiqBps !== undefined &&
+    addPenBps !== undefined &&
+    addLiqBps >= addLtvBps
+      ? encodeFunctionData({
+          abi: marketRegistryAbi,
+          functionName: 'addMarket',
+          args: [
+            trimmedVault as Address,
+            trimmedOracle as Address,
+            addLtvBps,
+            addLiqBps,
+            addPenBps,
+            govParseWadCap(addMarketSupplyCap),
+            govParseWadCap(addMarketBorrowCap),
+            addMarketIsolated,
+            govParseWadCap(addMarketIsoBorrowCap),
+          ],
+        })
+      : '0x';
   const trimmedPsm = newPsmMinterAddress.trim();
   const addMinterCalldata =
     GOVERNOR && AUSD && trimmedPsm && isAddress(trimmedPsm as Address)
@@ -190,24 +249,36 @@ export default function GovernancePage() {
       : '0x';
 
   const govTargets: Address[] =
-    govProposalKind === 'market' && registry
+    (govProposalKind === 'marketRisk' || govProposalKind === 'addMarket') && registry
       ? [registry as Address]
       : govProposalKind === 'addPsmMinter' && AUSD
         ? [AUSD]
         : [];
   const govValues: bigint[] = [0n];
   const govCalldatas: `0x${string}`[] =
-    govProposalKind === 'market' && marketCalldata !== '0x'
-      ? [marketCalldata as `0x${string}`]
-      : govProposalKind === 'addPsmMinter' && addMinterCalldata !== '0x'
-        ? [addMinterCalldata as `0x${string}`]
-        : [];
+    govProposalKind === 'marketRisk' && marketRiskCalldata !== '0x'
+      ? [marketRiskCalldata as `0x${string}`]
+      : govProposalKind === 'addMarket' && addMarketCalldataEncoded !== '0x'
+        ? [addMarketCalldataEncoded as `0x${string}`]
+        : govProposalKind === 'addPsmMinter' && addMinterCalldata !== '0x'
+          ? [addMinterCalldata as `0x${string}`]
+          : [];
   const descriptionHash = keccak256(stringToHex(govDescription || ''));
   const canCreateGovProposal =
     !!GOVERNOR &&
     govCalldatas.length > 0 &&
     govTargets.length > 0 &&
-    (govProposalKind === 'market' ? !!registry : !!AUSD && isAddress(trimmedPsm as Address));
+    (govProposalKind === 'marketRisk'
+      ? !!registry
+      : govProposalKind === 'addMarket'
+        ? !!registry &&
+          isAddress(trimmedVault as Address) &&
+          isAddress(trimmedOracle as Address) &&
+          addLtvBps !== undefined &&
+          addLiqBps !== undefined &&
+          addPenBps !== undefined &&
+          addLiqBps >= addLtvBps
+        : !!AUSD && isAddress(trimmedPsm as Address));
 
   const { data: govData, refetch: refetchGov } = useReadContracts({
     contracts: (GOVERNOR ? [
@@ -405,6 +476,8 @@ export default function GovernancePage() {
     switch (explorerChainId) {
       case 42161:
         return `https://arbiscan.io/tx/${txHash}`;
+      case 421614:
+        return `https://sepolia.arbiscan.io/tx/${txHash}`;
       case 8453:
         return `https://basescan.org/tx/${txHash}`;
       case 11155111:
@@ -767,9 +840,7 @@ export default function GovernancePage() {
       <div className="page-header flex items-end justify-between">
         <div>
           <h1 className="page-title">
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-ceitnot-gold to-ceitnot-accent">
-              Governance
-            </span>
+            <span className="page-title-accent">Governance</span>
           </h1>
           <p className="page-subtitle">Lock CEITNOT → get veCEITNOT → vote &amp; earn revenue</p>
         </div>
@@ -791,15 +862,15 @@ export default function GovernancePage() {
       </div>
 
       <div className="card p-4 mb-6 text-sm">
-        <p className="font-medium text-white">How Governance Works</p>
+        <p className="font-medium text-ceitnot-ink">How Governance Works</p>
         <p className="text-ceitnot-muted mt-1">
-          Buy or receive <span className="text-white">CEITNOT</span>, lock it to receive <span className="text-white">veCEITNOT</span>,
+          Buy or receive <span className="text-ceitnot-ink">CEITNOT</span>, lock it to receive <span className="text-ceitnot-ink">veCEITNOT</span>,
           then use your voting power to participate in proposals. While locked, you can also claim protocol
-          revenue shown in <span className="text-white">Pending Revenue</span>.
+          revenue shown in <span className="text-ceitnot-ink">Pending Revenue</span>.
         </p>
         <p className="text-ceitnot-muted mt-2">
-          On-chain flow: <span className="text-white">Create</span> → <span className="text-white">Vote</span> →{' '}
-          <span className="text-white">Queue</span> → <span className="text-white">Execute</span>.
+          On-chain flow: <span className="text-ceitnot-ink">Create</span> → <span className="text-ceitnot-ink">Vote</span> →{' '}
+          <span className="text-ceitnot-ink">Queue</span> → <span className="text-ceitnot-ink">Execute</span>.
         </p>
       </div>
 
@@ -864,11 +935,11 @@ export default function GovernancePage() {
         ) : (
           <div className="space-y-3">
             {proposalFeed.map((p) => (
-              <div key={p.proposalId.toString()} className="rounded-xl border border-ceitnot-border p-3 bg-ceitnot-bg">
+              <div key={p.proposalId.toString()} className="rounded-xl border border-ceitnot-border p-3 bg-ceitnot-surface-2/80">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <p className="text-xs text-ceitnot-muted">#{p.proposalId.toString()}</p>
-                    <p className="text-sm text-white mt-1 break-words">{humanizeProposalDescription(p.description)}</p>
+                    <p className="text-sm text-ceitnot-ink mt-1 break-words">{humanizeProposalDescription(p.description)}</p>
                     {p.description && (
                       <p className="text-xs text-ceitnot-muted mt-1 break-words">Raw: {p.description}</p>
                     )}
@@ -883,11 +954,11 @@ export default function GovernancePage() {
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-3 text-xs">
                   <p className="text-ceitnot-muted">State: <span className="text-ceitnot-gold">{proposalStateLabel(p.state)}</span></p>
-                  <p className="text-ceitnot-muted">Start: <span className="text-white">{formatUnix(p.voteStart)}</span></p>
-                  <p className="text-ceitnot-muted">End: <span className="text-white">{formatUnix(p.voteEnd)}</span></p>
+                  <p className="text-ceitnot-muted">Start: <span className="text-ceitnot-ink">{formatUnix(p.voteStart)}</span></p>
+                  <p className="text-ceitnot-muted">End: <span className="text-ceitnot-ink">{formatUnix(p.voteEnd)}</span></p>
                 </div>
                 <div className="flex items-center justify-between mt-2 text-xs">
-                  <p className="text-ceitnot-muted">Proposer: <span className="font-mono text-white">{formatAddress(p.proposer)}</span></p>
+                  <p className="text-ceitnot-muted">Proposer: <span className="font-mono text-ceitnot-ink">{formatAddress(p.proposer)}</span></p>
                   {p.txHash && blockExplorerTxUrl(p.txHash) && (
                     <a
                       href={blockExplorerTxUrl(p.txHash) ?? undefined}
@@ -913,9 +984,9 @@ export default function GovernancePage() {
         ) : (
           <div className="space-y-2">
             {(activityExpanded ? activityFeed : activityFeed.slice(0, ACTIVITY_INITIAL_COUNT)).map((a, idx) => (
-              <div key={`${a.kind}-${a.proposalId.toString()}-${a.txHash ?? idx}-${idx}`} className="rounded-xl border border-ceitnot-border p-3 bg-ceitnot-bg text-xs">
+              <div key={`${a.kind}-${a.proposalId.toString()}-${a.txHash ?? idx}-${idx}`} className="rounded-xl border border-ceitnot-border p-3 bg-ceitnot-surface-2/80 text-xs">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-white">
+                  <p className="text-ceitnot-ink">
                     {a.kind === 'proposed' && 'Proposal created'}
                     {a.kind === 'voted' && `Vote cast (${supportLabel(a.support)})`}
                     {a.kind === 'queued' && 'Proposal queued'}
@@ -932,8 +1003,8 @@ export default function GovernancePage() {
                 </div>
                 <div className="flex items-center justify-between gap-2 mt-2 text-ceitnot-muted">
                   <p>
-                    {a.actor ? <>Actor: <span className="font-mono text-white">{formatAddress(a.actor)}</span></> : ' '}
-                    {a.weight !== undefined ? <> · Weight: <span className="text-white">{formatWad(a.weight, 2)}</span></> : ' '}
+                    {a.actor ? <>Actor: <span className="font-mono text-ceitnot-ink">{formatAddress(a.actor)}</span></> : ' '}
+                    {a.weight !== undefined ? <> · Weight: <span className="text-ceitnot-ink">{formatWad(a.weight, 2)}</span></> : ' '}
                   </p>
                   {a.txHash && blockExplorerTxUrl(a.txHash) && (
                     <a href={blockExplorerTxUrl(a.txHash) ?? undefined} target="_blank" rel="noreferrer" className="text-ceitnot-gold hover:underline flex items-center gap-1">
@@ -943,7 +1014,7 @@ export default function GovernancePage() {
                 </div>
                 <p className="text-xs text-ceitnot-muted mt-2">
                   {(proposalTitleMap[a.proposalId.toString()] ?? 'Governance proposal action')}
-                  {' '}· id: <span className="font-mono text-white">{a.proposalId.toString()}</span>
+                  {' '}· id: <span className="font-mono text-ceitnot-ink">{a.proposalId.toString()}</span>
                 </p>
               </div>
             ))}
@@ -971,15 +1042,15 @@ export default function GovernancePage() {
               <div className="grid grid-cols-2 gap-4 text-sm">
                 <div>
                   <p className="text-ceitnot-muted">Amount Locked</p>
-                  <p className="font-mono text-white mt-1">{formatWad(lockedAmount, 4)} {displaySymbol}</p>
+                  <p className="font-mono text-ceitnot-ink mt-1">{formatWad(lockedAmount, 4)} {displaySymbol}</p>
                 </div>
                 <div>
                   <p className="text-ceitnot-muted">Unlock Date</p>
-                  <p className="font-mono text-white mt-1">{unlockDate}</p>
+                  <p className="font-mono text-ceitnot-ink mt-1">{unlockDate}</p>
                 </div>
                 <div>
                   <p className="text-ceitnot-muted">Time Remaining</p>
-                  <p className={`font-mono mt-1 ${lockExpired ? 'text-ceitnot-success' : 'text-white'}`}>{timeLeft}</p>
+                  <p className={`font-mono mt-1 ${lockExpired ? 'text-ceitnot-success' : 'text-ceitnot-ink'}`}>{timeLeft}</p>
                 </div>
                 <div>
                   <p className="text-ceitnot-muted">Voting Power</p>
@@ -1024,7 +1095,7 @@ export default function GovernancePage() {
                   >Max</button>
                 </div>
                 <p className="text-xs text-ceitnot-muted mt-1">
-                  Balance: <span className="text-white font-mono">{formatWad(govTokenBalance, 2)} {displaySymbol}</span>
+                  Balance: <span className="text-ceitnot-ink font-mono">{formatWad(govTokenBalance, 2)} {displaySymbol}</span>
                 </p>
               </div>
 
@@ -1038,7 +1109,7 @@ export default function GovernancePage() {
                       className={`px-3 py-2 rounded-xl text-sm font-medium transition-colors ${
                         durationWeeks === d.weeks
                           ? 'bg-ceitnot-gold/20 text-ceitnot-gold border border-ceitnot-gold/30'
-                          : 'bg-ceitnot-surface-2 text-ceitnot-muted-2 hover:text-white border border-transparent'
+                          : 'bg-ceitnot-surface-2 text-ceitnot-muted-2 hover:text-ceitnot-ink border border-transparent'
                       }`}
                     >{d.label}</button>
                   ))}
@@ -1104,7 +1175,7 @@ export default function GovernancePage() {
                       className={`px-3 py-2 rounded-xl text-sm font-medium transition-colors ${
                         extendWeeks === d.weeks
                           ? 'bg-ceitnot-gold/20 text-ceitnot-gold border border-ceitnot-gold/30'
-                          : 'bg-ceitnot-surface-2 text-ceitnot-muted-2 hover:text-white border border-transparent'
+                          : 'bg-ceitnot-surface-2 text-ceitnot-muted-2 hover:text-ceitnot-ink border border-transparent'
                       }`}
                     >{d.label}</button>
                   ))}
@@ -1129,9 +1200,9 @@ export default function GovernancePage() {
             <h2 className="font-semibold text-lg flex items-center gap-2 mb-4">
               <Gift size={18} className="text-ceitnot-gold" /> Revenue
             </h2>
-            <div className="p-4 bg-ceitnot-bg rounded-xl mb-4">
+            <div className="p-4 bg-ceitnot-surface-2/80 rounded-xl mb-4">
               <p className="text-ceitnot-muted text-sm">Pending Revenue</p>
-              <p className="text-2xl font-bold font-mono text-white mt-1">{formatWad(pendingRev, 6)}</p>
+              <p className="text-2xl font-bold font-mono text-ceitnot-ink mt-1">{formatWad(pendingRev, 6)}</p>
               <p className="text-xs text-ceitnot-muted mt-1">Earned from protocol fees, proportional to your locked CEITNOT</p>
             </div>
             <button
@@ -1150,9 +1221,9 @@ export default function GovernancePage() {
               <Users size={18} className="text-ceitnot-gold" /> Delegate Votes
             </h2>
             {currentDelegate && (
-              <div className="p-3 bg-ceitnot-bg rounded-xl mb-4">
+              <div className="p-3 bg-ceitnot-surface-2/80 rounded-xl mb-4">
                 <p className="text-ceitnot-muted text-xs">Currently delegated to</p>
-                <p className="text-white font-mono text-sm mt-1">
+                <p className="text-ceitnot-ink font-mono text-sm mt-1">
                   {currentDelegate === address ? 'Yourself' : formatAddress(currentDelegate)}
                 </p>
               </div>
@@ -1199,31 +1270,40 @@ export default function GovernancePage() {
             ) : (
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-3 text-xs">
-                  <div className="p-3 rounded-xl bg-ceitnot-bg">
+                  <div className="p-3 rounded-xl bg-ceitnot-surface-2/80">
                     <p className="text-ceitnot-muted">Voting Delay</p>
-                    <p className="font-mono mt-1">{govVotingDelay.toString()}</p>
+                    <p className="font-mono mt-1 text-ceitnot-ink">{govVotingDelay.toString()}</p>
                   </div>
-                  <div className="p-3 rounded-xl bg-ceitnot-bg">
+                  <div className="p-3 rounded-xl bg-ceitnot-surface-2/80">
                     <p className="text-ceitnot-muted">Voting Period</p>
-                    <p className="font-mono mt-1">{govVotingPeriod.toString()}</p>
+                    <p className="font-mono mt-1 text-ceitnot-ink">{govVotingPeriod.toString()}</p>
                   </div>
-                  <div className="p-3 rounded-xl bg-ceitnot-bg">
+                  <div className="p-3 rounded-xl bg-ceitnot-surface-2/80">
                     <p className="text-ceitnot-muted">Proposal Threshold</p>
-                    <p className="font-mono mt-1">{formatWad(govProposalThreshold, 2)}</p>
+                    <p className="font-mono mt-1 text-ceitnot-ink">{formatWad(govProposalThreshold, 2)}</p>
                   </div>
-                  <div className="p-3 rounded-xl bg-ceitnot-bg">
+                  <div className="p-3 rounded-xl bg-ceitnot-surface-2/80">
                     <p className="text-ceitnot-muted">Quorum (current)</p>
-                    <p className="font-mono mt-1">{formatWad(govQuorumNow, 2)}</p>
+                    <p className="font-mono mt-1 text-ceitnot-ink">{formatWad(govQuorumNow, 2)}</p>
                   </div>
                 </div>
 
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
-                    onClick={() => setGovProposalKind('market')}
-                    className={`btn-secondary text-xs ${govProposalKind === 'market' ? 'ring-1 ring-ceitnot-gold' : ''}`}
+                    onClick={() => setGovProposalKind('marketRisk')}
+                    className={`btn-secondary text-xs ${govProposalKind === 'marketRisk' ? 'ring-1 ring-ceitnot-gold' : ''}`}
                     disabled={isPending || !registry}
                   >Market risk</button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setGovProposalKind('addMarket');
+                      setGovDescription('AIP: Add USDT market (registry addMarket)');
+                    }}
+                    className={`btn-secondary text-xs ${govProposalKind === 'addMarket' ? 'ring-1 ring-ceitnot-gold' : ''}`}
+                    disabled={isPending || !registry}
+                  >Add market</button>
                   <button
                     type="button"
                     onClick={() => setGovProposalKind('addPsmMinter')}
@@ -1231,18 +1311,25 @@ export default function GovernancePage() {
                     disabled={isPending || !AUSD}
                   >aUSD add PSM minter</button>
                 </div>
-                {!registry && govProposalKind === 'market' && (
+                {!registry && (govProposalKind === 'marketRisk' || govProposalKind === 'addMarket') && (
                   <p className="text-xs text-ceitnot-danger">Registry address missing — switch template or set <code className="font-mono">VITE_REGISTRY_ADDRESS</code>.</p>
                 )}
                 {!AUSD && govProposalKind === 'addPsmMinter' && (
                   <p className="text-xs text-ceitnot-danger">Set <code className="font-mono">VITE_AUSD_ADDRESS</code> in <code className="font-mono">.env</code>.</p>
                 )}
+                {govProposalKind === 'addMarket' && registry && (
+                  <p className="text-xs text-ceitnot-muted leading-relaxed">
+                    Deploy <code className="font-mono">SimpleERC4626Vault</code> + <code className="font-mono">OracleRelay</code> first (e.g.{' '}
+                    <code className="font-mono">script/DeployMarketVaultOracleArbitrum.s.sol</code> with USDT asset + USDT/USD Chainlink on Arbitrum), then paste{' '}
+                    <span className="font-mono">VAULT</span> and <span className="font-mono">ORACLE</span> here. Timelock must be registry admin.
+                  </p>
+                )}
 
                 <div className="space-y-2">
                   <p className="text-xs text-ceitnot-muted uppercase tracking-wider">
-                    1) Create proposal ({govProposalKind === 'market' ? 'market risk' : 'aUSD addMinter'})
+                    1) Create proposal ({govProposalKind === 'marketRisk' ? 'market risk' : govProposalKind === 'addMarket' ? 'registry addMarket' : 'aUSD addMinter'})
                   </p>
-                  {govProposalKind === 'market' ? (
+                  {govProposalKind === 'marketRisk' ? (
                     <>
                       <div className="grid grid-cols-3 gap-2">
                         <input type="number" value={marketId} onChange={e => setMarketId(e.target.value)} placeholder="marketId" className="input-field" disabled={isPending} />
@@ -1251,6 +1338,50 @@ export default function GovernancePage() {
                       </div>
                       <input type="number" value={newLiqPenalty} onChange={e => setNewLiqPenalty(e.target.value)} placeholder="Liq penalty %" className="input-field w-full" disabled={isPending} />
                     </>
+                  ) : govProposalKind === 'addMarket' ? (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-xs text-ceitnot-muted mb-1">ERC-4626 vault address</label>
+                        <input
+                          type="text"
+                          value={addMarketVault}
+                          onChange={e => setAddMarketVault(e.target.value)}
+                          placeholder="0x… (vault shares = collateral)"
+                          className="input-field w-full font-mono text-xs"
+                          disabled={isPending}
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-ceitnot-muted mb-1">Oracle address (e.g. OracleRelay)</label>
+                        <input
+                          type="text"
+                          value={addMarketOracle}
+                          onChange={e => setAddMarketOracle(e.target.value)}
+                          placeholder="0x…"
+                          className="input-field w-full font-mono text-xs"
+                          disabled={isPending}
+                        />
+                      </div>
+                      <div className="grid grid-cols-3 gap-2">
+                        <input type="text" value={addMarketLtv} onChange={e => setAddMarketLtv(e.target.value)} placeholder="LTV %" className="input-field" disabled={isPending} />
+                        <input type="text" value={addMarketLiqTh} onChange={e => setAddMarketLiqTh(e.target.value)} placeholder="Liq thr %" className="input-field" disabled={isPending} />
+                        <input type="text" value={addMarketLiqPen} onChange={e => setAddMarketLiqPen(e.target.value)} placeholder="Liq pen %" className="input-field" disabled={isPending} />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <input type="text" value={addMarketSupplyCap} onChange={e => setAddMarketSupplyCap(e.target.value)} placeholder="Supply cap (WAD, optional)" className="input-field font-mono text-xs" disabled={isPending} />
+                        <input type="text" value={addMarketBorrowCap} onChange={e => setAddMarketBorrowCap(e.target.value)} placeholder="Borrow cap (WAD, optional)" className="input-field font-mono text-xs" disabled={isPending} />
+                      </div>
+                      <label className="flex items-center gap-2 text-sm text-ceitnot-muted cursor-pointer">
+                        <input type="checkbox" checked={addMarketIsolated} onChange={e => setAddMarketIsolated(e.target.checked)} disabled={isPending} />
+                        Isolated market
+                      </label>
+                      {addMarketIsolated && (
+                        <input type="text" value={addMarketIsoBorrowCap} onChange={e => setAddMarketIsoBorrowCap(e.target.value)} placeholder="Isolated borrow cap (WAD)" className="input-field w-full font-mono text-xs" disabled={isPending} />
+                      )}
+                      {addLtvBps !== undefined && addLiqBps !== undefined && addLiqBps < addLtvBps && (
+                        <p className="text-xs text-ceitnot-danger">Liquidation threshold must be ≥ LTV (registry rule).</p>
+                      )}
+                    </div>
                   ) : (
                     <div>
                       <label className="block text-xs text-ceitnot-muted mb-1">New PSM contract address</label>
@@ -1302,11 +1433,29 @@ export default function GovernancePage() {
                 </div>
 
                 {proposalId !== undefined && (
-                  <div className="p-3 rounded-xl bg-ceitnot-bg text-xs font-mono space-y-1">
-                    <p>State: <span className="text-ceitnot-gold">{proposalStateLabel(proposalState)}</span></p>
-                    {proposalSnapshot !== undefined && <p>Snapshot: {proposalSnapshot.toString()}</p>}
-                    {proposalDeadline !== undefined && <p>Deadline: {proposalDeadline.toString()}</p>}
-                    {hasVoted !== undefined && address && <p>Has voted ({formatAddress(address)}): {hasVoted ? 'yes' : 'no'}</p>}
+                  <div className="p-3 rounded-xl bg-ceitnot-surface-2/80 text-xs font-mono space-y-1 text-ceitnot-ink">
+                    <p>
+                      <span className="text-ceitnot-muted">State: </span>
+                      <span className="text-ceitnot-gold font-semibold">{proposalStateLabel(proposalState)}</span>
+                    </p>
+                    {proposalSnapshot !== undefined && (
+                      <p>
+                        <span className="text-ceitnot-muted">Snapshot: </span>
+                        {proposalSnapshot.toString()}
+                      </p>
+                    )}
+                    {proposalDeadline !== undefined && (
+                      <p>
+                        <span className="text-ceitnot-muted">Deadline: </span>
+                        {proposalDeadline.toString()}
+                      </p>
+                    )}
+                    {hasVoted !== undefined && address && (
+                      <p>
+                        <span className="text-ceitnot-muted">Has voted ({formatAddress(address)}): </span>
+                        {hasVoted ? 'yes' : 'no'}
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
@@ -1321,9 +1470,9 @@ export default function GovernancePage() {
               </p>
               <p className="mb-2">
                 Core administration (engine, market registry, PSM, aUSD, treasury) sits with the{' '}
-                <span className="text-white/90 font-medium">Timelock</span> smart contract, not a personal wallet (EOA).
+                <span className="text-ceitnot-ink/90 font-medium">Timelock</span> smart contract, not a personal wallet (EOA).
                 Parameter changes and privileged calls flow through the{' '}
-                <span className="text-white/90 font-medium">Governor</span>: propose → vote → queue on Timelock → delay → execute.
+                <span className="text-ceitnot-ink/90 font-medium">Governor</span>: propose → vote → queue on Timelock → delay → execute.
                 You can verify the Timelock address and full transaction history in the block explorer.
               </p>
               <div className="flex flex-wrap gap-x-4 gap-y-2 text-xs">
@@ -1397,10 +1546,10 @@ export default function GovernancePage() {
                 )}
               </p>
             )}
-            {(chainId === 31337 || chainId === 11155111 || chainId === 42161) && (
+            {(chainId === 31337 || chainId === 11155111 || chainId === 42161 || chainId === 421614) && (
               <p className="pt-2 text-ceitnot-gold/80">
                 Testnet CEITNOT: on a full deploy, 10M tokens are minted to the deployer address (DeployFullSepolia /
-                DeployFullArbitrum or local stack).
+                DeployFullArbitrumSepolia / DeployFullArbitrum or local stack).
               </p>
             )}
           </div>

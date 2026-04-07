@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 56" fill="none" role="img" aria-label="Ceitnot Protocol">
+  <!-- Hex outline (navbar-style mark), teal -->
+  <polygon
+    points="20,6 34,14 34,30 20,38 6,30 6,14"
+    stroke="#2dd4bf"
+    stroke-width="2"
+    fill="none"
+    stroke-linejoin="round"
+  />
+  <!-- Wordmark: dark header background variant (for light BG use ceitnot-wordmark-light.svg) -->
+  <text x="44" y="34" fill="#f8fafc" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="22" font-weight="700" letter-spacing="-0.02em">Ceitnot</text>
+  <text x="44" y="50" fill="#94a3b8" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="9" font-weight="500" letter-spacing="0.22em">PROTOCOL</text>
+</svg>

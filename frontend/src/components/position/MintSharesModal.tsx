@@ -64,7 +64,8 @@ export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress
   const showMockMint = (() => {
     if (!assetAddress || chainId == null) return false;
     const assetLc = assetAddress.toLowerCase();
-    if (chainId === 31337 || chainId === 1337 || chainId === 11155111) return true;
+    if (chainId === 31337 || chainId === 1337 || chainId === 11155111 || chainId === 421614)
+      return true;
 
     if (chainId === 42161) {
       const canonicalWstEth = '0x5979d7b546e38e414f7e9822514be443a4800529';
@@ -203,9 +204,9 @@ export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress
             {/* Explanation */}
             <div className="mb-5 p-3 bg-ceitnot-gold/5 border border-ceitnot-gold/10 rounded-xl">
               <p className="text-xs text-ceitnot-muted">
-                To deposit collateral, you first need <strong className="text-white">vault shares</strong>.
-                Enter the amount of <strong className="text-white">{assetSymbol}</strong> to convert into
-                {' '}<strong className="text-white">{vaultSymbol}</strong> shares.
+                To deposit collateral, you first need <strong className="text-ceitnot-ink">vault shares</strong>.
+                Enter the amount of <strong className="text-ceitnot-ink">{assetSymbol}</strong> to convert into
+                {' '}<strong className="text-ceitnot-ink">{vaultSymbol}</strong> shares.
               </p>
             </div>
 
@@ -247,13 +248,13 @@ export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress
 
             {/* Balances */}
             <div className="grid grid-cols-2 gap-3 mb-5 text-xs">
-              <div className="p-3 bg-ceitnot-bg rounded-xl">
+              <div className="p-3 bg-ceitnot-surface-2/80 rounded-xl">
                 <p className="text-ceitnot-muted">{assetSymbol} balance</p>
-                <p className="text-white font-mono mt-1">{formatUnits(assetBalance, 18)}</p>
+                <p className="text-ceitnot-ink font-mono mt-1">{formatUnits(assetBalance, 18)}</p>
               </div>
-              <div className="p-3 bg-ceitnot-bg rounded-xl">
+              <div className="p-3 bg-ceitnot-surface-2/80 rounded-xl">
                 <p className="text-ceitnot-muted">{vaultSymbol} shares</p>
-                <p className="text-white font-mono mt-1">{formatUnits(shareBalance, 18)}</p>
+                <p className="text-ceitnot-ink font-mono mt-1">{formatUnits(shareBalance, 18)}</p>
               </div>
             </div>
 

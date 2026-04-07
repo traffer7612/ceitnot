@@ -5,6 +5,8 @@ export function blockExplorerAddressUrl(chainId: number | undefined, address: st
   switch (chainId) {
     case 42161:
       return `https://arbiscan.io/address/${a}`;
+    case 421614:
+      return `https://sepolia.arbiscan.io/address/${a}`;
     case 8453:
       return `https://basescan.org/address/${a}`;
     case 11155111:

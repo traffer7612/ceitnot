@@ -266,7 +266,7 @@ export default function RewardsPage() {
                       key={d.weeks}
                       type="button"
                       onClick={() => setDurationWeeks(d.weeks)}
-                      className={`px-3 py-1.5 rounded-lg text-sm border ${durationWeeks === d.weeks ? 'border-ceitnot-gold text-ceitnot-gold bg-ceitnot-gold/10' : 'border-ceitnot-border text-ceitnot-muted-2 hover:text-white'}`}
+                      className={`px-3 py-1.5 rounded-lg text-sm border ${durationWeeks === d.weeks ? 'border-ceitnot-gold text-ceitnot-gold bg-ceitnot-gold/10' : 'border-ceitnot-border text-ceitnot-muted-2 hover:text-ceitnot-ink'}`}
                     >
                       {d.label}
                     </button>
@@ -297,7 +297,7 @@ export default function RewardsPage() {
                       key={`e-${d.weeks}`}
                       type="button"
                       onClick={() => setExtendWeeks(d.weeks)}
-                      className={`px-3 py-1.5 rounded-lg text-sm border ${extendWeeks === d.weeks ? 'border-ceitnot-gold text-ceitnot-gold bg-ceitnot-gold/10' : 'border-ceitnot-border text-ceitnot-muted-2 hover:text-white'}`}
+                      className={`px-3 py-1.5 rounded-lg text-sm border ${extendWeeks === d.weeks ? 'border-ceitnot-gold text-ceitnot-gold bg-ceitnot-gold/10' : 'border-ceitnot-border text-ceitnot-muted-2 hover:text-ceitnot-ink'}`}
                     >
                       {d.label}
                     </button>
@@ -330,7 +330,7 @@ export default function RewardsPage() {
                 {step === 'success' && 'Success. Data refreshed.'}
                 {step === 'error' && (errMsg || 'Transaction failed')}
               </span>
-              <button className="ml-auto text-xs text-ceitnot-muted hover:text-white" onClick={resetStatus}>Clear</button>
+              <button className="ml-auto text-xs text-ceitnot-muted hover:text-ceitnot-ink" onClick={resetStatus}>Clear</button>
             </div>
           )}
 

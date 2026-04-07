@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 56" fill="none" role="img" aria-label="Ceitnot Protocol">
+  <polygon
+    points="20,6 34,14 34,30 20,38 6,30 6,14"
+    stroke="#0d9488"
+    stroke-width="2"
+    fill="none"
+    stroke-linejoin="round"
+  />
+  <text x="44" y="34" fill="#0f172a" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="22" font-weight="700" letter-spacing="-0.02em">Ceitnot</text>
+  <text x="44" y="50" fill="#64748b" font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="9" font-weight="500" letter-spacing="0.22em">PROTOCOL</text>
+</svg>

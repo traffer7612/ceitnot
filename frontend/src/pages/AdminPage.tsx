@@ -279,7 +279,7 @@ function MarketManageCard({ market, registry, gas, onSuccess }: {
           <div className="flex gap-1 border-b border-ceitnot-border">
             {(['caps', 'risk', 'irm', 'fees', 'liq'] as const).map(t => (
               <button key={t} onClick={() => setTab(t)}
-                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${tab === t ? 'border-ceitnot-gold text-ceitnot-gold' : 'border-transparent text-ceitnot-muted hover:text-white'}`}>
+                className={`px-3 py-1.5 text-xs font-medium border-b-2 transition-colors ${tab === t ? 'border-ceitnot-gold text-ceitnot-gold' : 'border-transparent text-ceitnot-muted hover:text-ceitnot-ink'}`}>
                 {t === 'caps' ? 'Caps' : t === 'risk' ? 'Risk' : t === 'irm' ? 'IRM' : t === 'fees' ? 'Fees' : 'Liquidation'}
               </button>
             ))}
@@ -408,7 +408,7 @@ export default function AdminPage() {
     <div className="page-container max-w-3xl mx-auto">
       <div className="page-header">
         <h1 className="page-title flex items-center gap-3">
-          <span className="text-transparent bg-clip-text bg-gradient-to-r from-ceitnot-gold to-ceitnot-accent">Admin</span>
+          <span className="page-title-accent">Admin</span>
         </h1>
         <p className="page-subtitle">Protocol configuration, market management and emergency controls.</p>
       </div>
@@ -417,7 +417,7 @@ export default function AdminPage() {
         <div className="rounded-xl border border-ceitnot-gold/35 bg-ceitnot-gold/10 p-4 mb-5 text-sm text-ceitnot-muted-2 leading-relaxed">
           <p className="font-medium text-ceitnot-gold mb-1">On-chain admin is the Timelock contract</p>
           <p className="mb-2">
-            Direct EOA admin actions from this page are disabled while <span className="text-white/90">engine.admin()</span> points to Timelock.
+            Direct EOA admin actions from this page are disabled while <span className="text-ceitnot-ink/90">engine.admin()</span> points to Timelock.
             Use{' '}
             <Link to="/governance" className="text-ceitnot-gold hover:underline font-medium">
               Governance
@@ -484,7 +484,7 @@ export default function AdminPage() {
           ] as const).map(([label, addr]) => addr && (
             <div key={label} className="flex items-center justify-between gap-2 py-2 border-b border-ceitnot-border last:border-0">
               <span className="text-ceitnot-muted text-xs min-w-[80px]">{label}</span>
-              <span className="text-white truncate">{addr}</span>
+              <span className="text-ceitnot-ink truncate">{addr}</span>
               <CopyButton text={addr} />
             </div>
           ))}
@@ -544,15 +544,15 @@ export default function AdminPage() {
                 <h2 className="font-semibold">PSM Fee Reserves</h2>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4 text-sm">
-                <div className="p-3 rounded-lg bg-ceitnot-bg">
+                <div className="p-3 rounded-lg bg-ceitnot-surface-2/80">
                   <p className="text-ceitnot-muted text-xs">PSM Address</p>
                   <p className="font-mono text-xs mt-1">{formatAddress(psmAddress)}</p>
                 </div>
-                <div className="p-3 rounded-lg bg-ceitnot-bg">
+                <div className="p-3 rounded-lg bg-ceitnot-surface-2/80">
                   <p className="text-ceitnot-muted text-xs">Fee Reserves</p>
                   <p className="font-mono mt-1">{formatWad(psmFeeReserves, 6)}</p>
                 </div>
-                <div className="p-3 rounded-lg bg-ceitnot-bg">
+                <div className="p-3 rounded-lg bg-ceitnot-surface-2/80">
                   <p className="text-ceitnot-muted text-xs">Fees</p>
                   <p className="font-mono mt-1">tin {formatBps(psmTinBps)} / tout {formatBps(psmToutBps)}</p>
                 </div>

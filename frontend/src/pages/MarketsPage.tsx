@@ -40,7 +40,7 @@ function MarketCard({ market }: { market: ReturnType<typeof useMarkets>['markets
       <div className="px-5 py-3 border-b border-ceitnot-border">
         <div className="flex justify-between text-xs text-ceitnot-muted mb-1.5">
           <span>Borrow utilization</span>
-          <span className="font-mono text-white">{utilPct.toFixed(1)}%</span>
+          <span className="font-mono text-ceitnot-ink">{utilPct.toFixed(1)}%</span>
         </div>
         <div className="h-1.5 bg-ceitnot-border rounded-full overflow-hidden">
           <div
@@ -88,7 +88,7 @@ function Row({ label, value }: { label: string; value: string }) {
   return (
     <div>
       <p className="text-xs text-ceitnot-muted">{label}</p>
-      <p className="font-mono text-white mt-0.5">{value}</p>
+      <p className="font-mono text-ceitnot-ink mt-0.5">{value}</p>
     </div>
   );
 }
@@ -104,7 +104,7 @@ export default function MarketsPage() {
       <div className="page-header flex items-end justify-between">
         <div>
           <h1 className="page-title">
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-ceitnot-gold to-ceitnot-accent">Markets</span>
+            <span className="page-title-accent">Markets</span>
           </h1>
           <p className="page-subtitle">{count} market{count !== 1 ? 's' : ''} on the protocol</p>
         </div>

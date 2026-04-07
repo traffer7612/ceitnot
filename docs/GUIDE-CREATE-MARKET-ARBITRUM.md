@@ -1,4 +1,4 @@
-﻿# Создание нового маркета на Arbitrum One (от и до)
+# Создание нового маркета на Arbitrum One (от и до)
 
 Это пошаговый гайд для тех, кто **никогда** не добавлял маркет в Ceitnot на боевой сети.
 После этого гайда у вас будет новый маркет в протоколе, куда пользователи смогут вносить коллатерал и занимать aUSD / USDC.
@@ -117,6 +117,7 @@ contract SimpleVault is ERC4626 {
 
 ### Популярные фиды на Arbitrum One:
 - ETH / USD: `0x639Fe6ab55C921f74e7fac1ee960C0B6293ba612`
+- USDT / USD (Standard): `0x3f3f5dF88dC9F13eac63DF89EC16ef6e7E25DdE7` ([data.chain.link — USDT/USD Arbitrum](https://data.chain.link/feeds/arbitrum/mainnet/usdt-usd))
 - BTC / USD: `0x6ce185860a4963106506C203335A2910413708e9`
 - ARB / USD: `0xb2A824043730FE05F3DA2efaFa1CBbe83fa548D6`
 - LINK / USD: `0x86E53CF1B870786351Da77A57575e79CB55812CB`
