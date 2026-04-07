@@ -203,6 +203,13 @@ export default function ActionModal({
 
   if (!open) return null;
 
+  const depositExceedsWallet =
+    action === 'deposit' && amountRaw > 0n && amountRaw > walletShares;
+  const withdrawExceedsDeposited =
+    action === 'withdraw' && sharesBalance !== undefined && amountRaw > sharesBalance;
+  const repayExceedsDebt =
+    action === 'repay' && debtBalance !== undefined && amountRaw > debtBalance;
+
   const isPending  = step === 'approving' || step === 'writing' || step === 'redeeming';
   const buttonLabel = step === 'approving'
     ? 'Approving…'
@@ -316,6 +323,11 @@ export default function ActionModal({
               {action === 'deposit' && (
                 <p className="text-xs text-ceitnot-muted mt-1">
                   Wallet shares: <span className="text-ceitnot-ink font-mono">{formatUnits(walletShares, 18)}</span>
+                  {depositExceedsWallet && (
+                    <span className="block text-ceitnot-danger mt-1">
+                      Not enough vault shares — use “Get vault shares” first (mint wstETH → deposit into vault).
+                    </span>
+                  )}
                 </p>
               )}
               {action === 'withdraw' && sharesBalance !== undefined && (
@@ -346,7 +358,14 @@ export default function ActionModal({
             <button
               type="button"
               onClick={submit}
-              disabled={isPending || !amountRaw || amountRaw <= 0n}
+              disabled={
+                isPending
+                || !amountRaw
+                || amountRaw <= 0n
+                || depositExceedsWallet
+                || withdrawExceedsDeposited
+                || repayExceedsDebt
+              }
               className={`w-full ${ACTION_COLOR[action]} flex items-center justify-center gap-2`}
             >
               {isPending && <Loader2 size={16} className="animate-spin" />}
