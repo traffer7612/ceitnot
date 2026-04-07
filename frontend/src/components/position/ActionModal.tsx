@@ -41,8 +41,11 @@ export default function ActionModal({
   open, onClose, onSuccess, action, marketId,
   vaultAddress, debtTokenAddress, sharesBalance, debtBalance,
 }: Props) {
-  const { address, chainId } = useAccount();
+  const { address, chainId, isConnected } = useAccount();
   const { engine } = useContractAddresses();
+  /** Env `VITE_*` addresses are only valid on this chain — always read balances/allowance here (not the wallet’s current chain). */
+  const readChainId = TARGET_CHAIN_ID;
+  const chainMismatch = isConnected && chainId != null && chainId !== TARGET_CHAIN_ID;
   const [amount, setAmount] = useState('');
   const [hash, setHash] = useState<Hash | undefined>();
   const [step, setStep] = useState<'input' | 'approving' | 'writing' | 'withdrawn' | 'redeeming' | 'success' | 'error'>('input');
@@ -59,8 +62,8 @@ export default function ActionModal({
   // Read wallet balances: vault shares (for deposit) and debt token (for repay/borrow info)
   const { data: walletData } = useReadContracts({
     contracts: address ? [
-      ...(vaultAddress ? [{ address: vaultAddress, abi: erc20Abi, functionName: 'balanceOf' as const, args: [address] as const, chainId: TARGET_CHAIN_ID }] : []),
-      ...(debtTokenAddress ? [{ address: debtTokenAddress, abi: erc20Abi, functionName: 'balanceOf' as const, args: [address] as const, chainId: TARGET_CHAIN_ID }] : []),
+      ...(vaultAddress ? [{ address: vaultAddress, abi: erc20Abi, functionName: 'balanceOf' as const, args: [address] as const, chainId: readChainId }] : []),
+      ...(debtTokenAddress ? [{ address: debtTokenAddress, abi: erc20Abi, functionName: 'balanceOf' as const, args: [address] as const, chainId: readChainId }] : []),
     ] : [],
     query: { enabled: !!address && (!!vaultAddress || !!debtTokenAddress) },
   });
@@ -69,19 +72,19 @@ export default function ActionModal({
 
   // Optional: for withdraw, show underlying asset symbol (assets received after redeem).
   const { data: vaultSymbolData } = useReadContracts({
-    contracts: vaultAddress && address ? [{ address: vaultAddress, abi: erc20Abi, functionName: 'symbol' as const, chainId: TARGET_CHAIN_ID }] : [],
+    contracts: vaultAddress && address ? [{ address: vaultAddress, abi: erc20Abi, functionName: 'symbol' as const, chainId: readChainId }] : [],
     query: { enabled: !!vaultAddress && !!address && action === 'withdraw' },
   });
   const vaultSymbol = (vaultSymbolData?.[0]?.result as string | undefined) ?? 'SHARES';
 
   const { data: vaultAssetData } = useReadContracts({
-    contracts: vaultAddress && address ? [{ address: vaultAddress, abi: erc4626Abi, functionName: 'asset' as const, chainId: TARGET_CHAIN_ID }] : [],
+    contracts: vaultAddress && address ? [{ address: vaultAddress, abi: erc4626Abi, functionName: 'asset' as const, chainId: readChainId }] : [],
     query: { enabled: !!vaultAddress && !!address && action === 'withdraw' },
   });
   const assetAddress = (vaultAssetData?.[0]?.result as Address | undefined) ?? undefined;
 
   const { data: assetSymbolData } = useReadContracts({
-    contracts: assetAddress && action === 'withdraw' ? [{ address: assetAddress, abi: erc20Abi, functionName: 'symbol' as const, chainId: TARGET_CHAIN_ID }] : [],
+    contracts: assetAddress && action === 'withdraw' ? [{ address: assetAddress, abi: erc20Abi, functionName: 'symbol' as const, chainId: readChainId }] : [],
     query: { enabled: !!assetAddress && action === 'withdraw' },
   });
   const assetSymbol = (assetSymbolData?.[0]?.result as string | undefined) ?? 'ASSET';
@@ -89,7 +92,7 @@ export default function ActionModal({
   // Read collateral value for borrow max calculation
   const { data: posValueData } = useReadContracts({
     contracts: engine && address ? [
-      { address: engine, abi: ceitnotEngineAbi, functionName: 'getPositionCollateralValue' as const, args: [address, BigInt(marketId)] as const, chainId: TARGET_CHAIN_ID },
+      { address: engine, abi: ceitnotEngineAbi, functionName: 'getPositionCollateralValue' as const, args: [address, BigInt(marketId)] as const, chainId: readChainId },
     ] : [],
     query: { enabled: !!engine && !!address && action === 'borrow' },
   });
@@ -103,6 +106,7 @@ export default function ActionModal({
       abi: erc20Abi,
       functionName: 'allowance' as const,
       args: [address, engine] as const,
+      chainId: readChainId,
     }] : [],
     query: { enabled: !!approvalToken && !!address && !!engine },
   });
@@ -146,6 +150,15 @@ export default function ActionModal({
 
   async function submit() {
     if (!address || !engine) return;
+    if (chainId !== TARGET_CHAIN_ID) {
+      setStep('error');
+      setErrMsg(
+        chainId == null
+          ? 'Подключите кошелёк.'
+          : `Неверная сеть: сейчас ${chainId}, нужна ${TARGET_CHAIN_ID} (как в настройках приложения).`,
+      );
+      return;
+    }
     const gas = gasFor(chainId);
     try {
       if (needsApproval && approvalToken) {
@@ -155,6 +168,7 @@ export default function ActionModal({
           abi: erc20Abi,
           functionName: 'approve',
           args: [engine, 2n ** 256n - 1n],
+          chainId: TARGET_CHAIN_ID,
           ...gas,
         });
         setHash(h);
@@ -163,14 +177,15 @@ export default function ActionModal({
 
       setStep('writing');
       let h: Hash;
+      const writeBase = { chainId: TARGET_CHAIN_ID, ...gas } as const;
       if (action === 'deposit') {
-        h = await writeContractAsync({ address: engine, abi: ceitnotEngineAbi, functionName: 'depositCollateral', args: [address, BigInt(marketId), amountRaw], ...gas });
+        h = await writeContractAsync({ address: engine, abi: ceitnotEngineAbi, functionName: 'depositCollateral', args: [address, BigInt(marketId), amountRaw], ...writeBase });
       } else if (action === 'withdraw') {
-        h = await writeContractAsync({ address: engine, abi: ceitnotEngineAbi, functionName: 'withdrawCollateral', args: [address, BigInt(marketId), amountRaw], ...gas });
+        h = await writeContractAsync({ address: engine, abi: ceitnotEngineAbi, functionName: 'withdrawCollateral', args: [address, BigInt(marketId), amountRaw], ...writeBase });
       } else if (action === 'borrow') {
-        h = await writeContractAsync({ address: engine, abi: ceitnotEngineAbi, functionName: 'borrow', args: [address, BigInt(marketId), amountRaw], ...gas });
+        h = await writeContractAsync({ address: engine, abi: ceitnotEngineAbi, functionName: 'borrow', args: [address, BigInt(marketId), amountRaw], ...writeBase });
       } else {
-        h = await writeContractAsync({ address: engine, abi: ceitnotEngineAbi, functionName: 'repay', args: [address, BigInt(marketId), amountRaw], ...gas });
+        h = await writeContractAsync({ address: engine, abi: ceitnotEngineAbi, functionName: 'repay', args: [address, BigInt(marketId), amountRaw], ...writeBase });
       }
       setHash(h);
     } catch (e: unknown) {
@@ -182,6 +197,7 @@ export default function ActionModal({
 
   async function redeemUnderlying() {
     if (!address || !vaultAddress) return;
+    if (chainId !== TARGET_CHAIN_ID) return;
     const gas = gasFor(chainId);
     try {
       setStep('redeeming');
@@ -191,6 +207,7 @@ export default function ActionModal({
         functionName: 'redeem',
         // shares -> receiver in underlying; owner=msg.sender (no approve needed)
         args: [amountRaw, address, address],
+        chainId: TARGET_CHAIN_ID,
         ...gas,
       });
       setHash(h);
@@ -320,7 +337,12 @@ export default function ActionModal({
               </div>
 
               {/* Balance hints */}
-              {action === 'deposit' && (
+              {chainMismatch && (
+                <p className="text-xs text-ceitnot-danger mt-2">
+                  Сеть кошелька ({chainId}) не совпадает с сетью приложения ({TARGET_CHAIN_ID}). Переключите сеть — иначе баланс shares и транзакция расходятся.
+                </p>
+              )}
+            {action === 'deposit' && (
                 <p className="text-xs text-ceitnot-muted mt-1">
                   Wallet shares: <span className="text-ceitnot-ink font-mono">{formatUnits(walletShares, 18)}</span>
                   {depositExceedsWallet && (
@@ -360,6 +382,7 @@ export default function ActionModal({
               onClick={submit}
               disabled={
                 isPending
+                || chainMismatch
                 || !amountRaw
                 || amountRaw <= 0n
                 || depositExceedsWallet
