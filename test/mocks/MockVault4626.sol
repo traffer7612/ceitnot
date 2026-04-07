@@ -52,6 +52,30 @@ contract MockVault4626 {
         return shares;
     }
 
+    /// @dev ERC-4626-style preview (matches `convertToAssets`).
+    function previewRedeem(uint256 shares) external view returns (uint256) {
+        return shares * pricePerShare / 1e18;
+    }
+
+    /// @notice Burn vault shares and send underlying to `receiver` (OZ ERC4626-compatible signature).
+    /// @dev Required for testnet UI `redeem`; older deployed mocks without this function always revert on redeem.
+    function redeem(uint256 shares, address receiver, address owner) external returns (uint256 assets) {
+        if (msg.sender != owner) {
+            uint256 a = allowance[owner][msg.sender];
+            require(a >= shares, "MockVault: allowance");
+            if (a != type(uint256).max) {
+                allowance[owner][msg.sender] = a - shares;
+            }
+        }
+        balanceOf[owner] -= shares;
+        totalSupply -= shares;
+        assets = shares * pricePerShare / 1e18;
+        require(ASSET_TOKEN.balanceOf(address(this)) >= assets, "MockVault: liquidity");
+        bool ok = ASSET_TOKEN.transfer(receiver, assets);
+        require(ok, "MockVault: redeem transfer failed");
+        return assets;
+    }
+
     function approve(address spender, uint256 amount) external returns (bool) {
         allowance[msg.sender][spender] = amount;
         return true;
