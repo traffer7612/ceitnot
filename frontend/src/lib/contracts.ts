@@ -55,11 +55,26 @@ export function useContractAddresses() {
   };
 }
 
-/** Gas override helpers per chain */
+/**
+ * Gas + EIP-1559 hints per chain.
+ * On Arbitrum L2, wallets sometimes submit maxFeePerGas just under the next block base fee;
+ * explicit caps with headroom avoid "max fee per gas less than block base fee" reverts.
+ */
 export function gasFor(chainId: number | undefined) {
   if (chainId === 31337 || chainId === 1337) return { gas: 8_000_000n };
-  if (chainId === 42161)                     return { gas: 300_000n };
-  if (chainId === 421614)                    return { gas: 300_000n };
-  if (chainId === 11155111)                  return { gas: 500_000n };
+  if (chainId === 42161 || chainId === 421614) {
+    return {
+      gas: 300_000n,
+      maxFeePerGas: 5_000_000_000n, // 5 gwei — above typical Arb base fee spikes
+      maxPriorityFeePerGas: 100_000_000n, // 0.1 gwei
+    };
+  }
+  if (chainId === 11155111) {
+    return {
+      gas: 500_000n,
+      maxFeePerGas: 50_000_000_000n,
+      maxPriorityFeePerGas: 2_000_000_000n,
+    };
+  }
   return {};
 }
