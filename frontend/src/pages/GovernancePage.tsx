@@ -95,11 +95,13 @@ type ProposalFeedItem = {
   state?: number;
 };
 type GovernanceActivityItem = {
-  kind: 'proposed' | 'voted' | 'queued' | 'executed';
-  proposalId: bigint;
+  kind: 'proposed' | 'voted' | 'queued' | 'executed' | 'timelock_scheduled' | 'timelock_executed';
+  proposalId?: bigint;
   actor?: Address;
   support?: number;
   weight?: bigint;
+  opId?: Hash;
+  target?: Address;
   txHash?: Hash;
   blockNumber?: bigint;
   logIndex?: number;
@@ -116,6 +118,12 @@ const proposalQueuedEvent = parseAbiItem(
 );
 const proposalExecutedEvent = parseAbiItem(
   'event ProposalExecuted(uint256 proposalId)',
+);
+const timelockCallScheduledEvent = parseAbiItem(
+  'event CallScheduled(bytes32 indexed id,uint256 indexed index,address target,uint256 value,bytes data,bytes32 predecessor,uint256 delay)',
+);
+const timelockCallExecutedEvent = parseAbiItem(
+  'event CallExecuted(bytes32 indexed id,uint256 indexed index,address target,uint256 value,bytes data)',
 );
 
 export default function GovernancePage() {
@@ -496,7 +504,7 @@ export default function GovernancePage() {
       const latest = await publicClient.getBlock({ blockNumber: latestBlock });
       const minTs = BigInt(Math.max(0, Number(latest.timestamp) - FEED_WINDOW_SECONDS));
       const fromBlock = governanceLogsFromBlock(latestBlock, TARGET_CHAIN_ID);
-      const [createdLogs, voteLogs, queuedLogs, executedLogs] = await Promise.all([
+      const [createdLogs, voteLogs, queuedLogs, executedLogs, timelockScheduledLogs, timelockExecutedLogs] = await Promise.all([
         publicClient.getLogs({
           address: GOVERNOR,
           event: proposalCreatedEvent,
@@ -521,6 +529,18 @@ export default function GovernancePage() {
           fromBlock,
           toBlock: 'latest',
         }),
+        TIMELOCK ? publicClient.getLogs({
+          address: TIMELOCK,
+          event: timelockCallScheduledEvent,
+          fromBlock,
+          toBlock: 'latest',
+        }) : Promise.resolve([]),
+        TIMELOCK ? publicClient.getLogs({
+          address: TIMELOCK,
+          event: timelockCallExecutedEvent,
+          fromBlock,
+          toBlock: 'latest',
+        }) : Promise.resolve([]),
       ]);
 
       const stateIds = new Set<bigint>();
@@ -591,6 +611,28 @@ export default function GovernancePage() {
             logIndex: log.logIndex,
           };
         }),
+        ...timelockScheduledLogs.map((log) => {
+          const args = log.args as { id: Hash; target: Address };
+          return {
+            kind: 'timelock_scheduled' as const,
+            opId: args.id,
+            target: args.target,
+            txHash: log.transactionHash,
+            blockNumber: log.blockNumber,
+            logIndex: log.logIndex,
+          };
+        }),
+        ...timelockExecutedLogs.map((log) => {
+          const args = log.args as { id: Hash; target: Address };
+          return {
+            kind: 'timelock_executed' as const,
+            opId: args.id,
+            target: args.target,
+            txHash: log.transactionHash,
+            blockNumber: log.blockNumber,
+            logIndex: log.logIndex,
+          };
+        }),
       ].sort((a, b) => {
         const aBlock = Number(a.blockNumber ?? 0n);
         const bBlock = Number(b.blockNumber ?? 0n);
@@ -613,7 +655,7 @@ export default function GovernancePage() {
 
       const proposalIdsShown = new Set(recentProposalIdsFromLogs(createdLogs));
       const activity = filteredByTime
-        .filter((a) => !(a.kind === 'proposed' && proposalIdsShown.has(a.proposalId.toString())))
+        .filter((a) => !(a.kind === 'proposed' && a.proposalId !== undefined && proposalIdsShown.has(a.proposalId.toString())))
         .slice(0, 20);
       setActivityFeed(activity);
       const titles: Record<string, string> = {};
@@ -720,6 +762,10 @@ export default function GovernancePage() {
   const shortProposalId = (id: bigint) => {
     const s = id.toString();
     return s.length > 18 ? `${s.slice(0, 10)}...${s.slice(-6)}` : s;
+  };
+  const shortHash = (h?: string) => {
+    if (!h) return '—';
+    return h.length > 18 ? `${h.slice(0, 10)}...${h.slice(-6)}` : h;
   };
 
   async function handleProposeRiskUpdate() {
@@ -984,27 +1030,34 @@ export default function GovernancePage() {
         ) : (
           <div className="space-y-2">
             {(activityExpanded ? activityFeed : activityFeed.slice(0, ACTIVITY_INITIAL_COUNT)).map((a, idx) => (
-              <div key={`${a.kind}-${a.proposalId.toString()}-${a.txHash ?? idx}-${idx}`} className="rounded-xl border border-ceitnot-border p-3 bg-ceitnot-surface-2/80 text-xs">
+              <div key={`${a.kind}-${a.proposalId?.toString() ?? a.opId ?? idx}-${a.txHash ?? idx}-${idx}`} className="rounded-xl border border-ceitnot-border p-3 bg-ceitnot-surface-2/80 text-xs">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-ceitnot-ink">
                     {a.kind === 'proposed' && 'Proposal created'}
                     {a.kind === 'voted' && `Vote cast (${supportLabel(a.support)})`}
                     {a.kind === 'queued' && 'Proposal queued'}
                     {a.kind === 'executed' && 'Proposal executed'}
-                    {' '}for <span className="font-mono">#{shortProposalId(a.proposalId)}</span>
+                    {a.kind === 'timelock_scheduled' && 'Timelock call scheduled'}
+                    {a.kind === 'timelock_executed' && 'Timelock call executed'}
+                    {a.proposalId !== undefined && (
+                      <> for <span className="font-mono">#{shortProposalId(a.proposalId)}</span></>
+                    )}
                   </p>
-                  <button
-                    onClick={() => setProposalIdInput(a.proposalId.toString())}
-                    className="btn-secondary text-xs shrink-0"
-                    disabled={isPending}
-                  >
-                    Use in Vote
-                  </button>
+                  {a.proposalId !== undefined && (
+                    <button
+                      onClick={() => setProposalIdInput(a.proposalId!.toString())}
+                      className="btn-secondary text-xs shrink-0"
+                      disabled={isPending}
+                    >
+                      Use in Vote
+                    </button>
+                  )}
                 </div>
                 <div className="flex items-center justify-between gap-2 mt-2 text-ceitnot-muted">
                   <p>
                     {a.actor ? <>Actor: <span className="font-mono text-ceitnot-ink">{formatAddress(a.actor)}</span></> : ' '}
                     {a.weight !== undefined ? <> · Weight: <span className="text-ceitnot-ink">{formatWad(a.weight, 2)}</span></> : ' '}
+                    {a.target ? <> · Target: <span className="font-mono text-ceitnot-ink">{formatAddress(a.target)}</span></> : ' '}
                   </p>
                   {a.txHash && blockExplorerTxUrl(a.txHash) && (
                     <a href={blockExplorerTxUrl(a.txHash) ?? undefined} target="_blank" rel="noreferrer" className="text-ceitnot-gold hover:underline flex items-center gap-1">
@@ -1013,8 +1066,12 @@ export default function GovernancePage() {
                   )}
                 </div>
                 <p className="text-xs text-ceitnot-muted mt-2">
-                  {(proposalTitleMap[a.proposalId.toString()] ?? 'Governance proposal action')}
-                  {' '}· id: <span className="font-mono text-ceitnot-ink">{a.proposalId.toString()}</span>
+                  {a.proposalId !== undefined
+                    ? (proposalTitleMap[a.proposalId.toString()] ?? 'Governance proposal action')
+                    : 'Direct Timelock operation'}
+                  {' '}· id: <span className="font-mono text-ceitnot-ink">
+                    {a.proposalId !== undefined ? a.proposalId.toString() : shortHash(a.opId)}
+                  </span>
                 </p>
               </div>
             ))}
