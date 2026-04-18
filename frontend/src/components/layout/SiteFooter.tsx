@@ -8,6 +8,7 @@ import {
   DOC_SOCIAL_ANNOUNCEMENT_TEMPLATE_URL,
   REPO_ROOT_URL,
 } from '../../lib/publicDocs';
+import ContractWolfAuditBlock from './ContractWolfAuditBlock';
 
 /** Ceitnot lending / CDP UI; not affiliated with unrelated third-party products. */
 export default function SiteFooter() {
@@ -43,6 +44,8 @@ export default function SiteFooter() {
             </div>
           </div>
         </div>
+
+        <ContractWolfAuditBlock layout="footer" />
 
         <nav
           className="mt-8 flex flex-wrap items-center justify-center gap-x-8 gap-y-3 text-sm text-ceitnot-muted"

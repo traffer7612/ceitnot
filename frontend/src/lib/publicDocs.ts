@@ -20,3 +20,10 @@ export const REPO_ROOT_URL = `https://github.com/${REPO}`;
 
 /** Base path for `docs/*.md` on GitHub (blob view). */
 export const DOCS_BLOB_BASE = `${REPO_ROOT_URL}/blob/${BRANCH}/docs`;
+
+/** ContractWolf — public project page + published PDF audits (third-party repo). */
+export const CONTRACT_WOLF_PROJECT_URL = 'https://contractwolf.io/projects/ceitnot';
+export const CONTRACT_WOLF_AUDIT_TOKEN_PDF_URL =
+  'https://github.com/ContractWolf/smart-contract-audits/blob/main/ContractWolf_Audit_Ceitnot.pdf';
+export const CONTRACT_WOLF_AUDIT_UTILITIES_PDF_URL =
+  'https://github.com/ContractWolf/smart-contract-audits/blob/main/ContractWolf_Audit_Ceitnot_Utilities.pdf';

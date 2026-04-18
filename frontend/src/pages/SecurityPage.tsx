@@ -1,5 +1,6 @@
 import { Shield, FileSearch, Bug, ExternalLink, CheckCircle } from 'lucide-react';
 import { DOCS_BLOB_BASE } from '../lib/publicDocs';
+import ContractWolfAuditBlock from '../components/layout/ContractWolfAuditBlock';
 
 export default function SecurityPage() {
   return (
@@ -13,6 +14,8 @@ export default function SecurityPage() {
           Audits, static analysis (Slither), and Bug Bounty program.
         </p>
       </div>
+
+      <ContractWolfAuditBlock layout="card" />
 
       <div className="grid md:grid-cols-2 gap-6">
         {/* Slither */}
