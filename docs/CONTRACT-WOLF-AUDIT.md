@@ -1,5 +1,7 @@
 # Contract Wolf — Ceitnot audit
 
+For a general **external audit** overview in English (same links, short context), see **[EXTERNAL-AUDIT.md](./EXTERNAL-AUDIT.md)**.
+
 Independent smart contract audit by [Contract Wolf](https://contractwolf.io/). This document lists public artefacts for transparency.
 
 ## Links
