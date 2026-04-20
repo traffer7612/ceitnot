@@ -12,7 +12,7 @@ Explorer: [Arbitrum One](https://arbiscan.io/).
 
 | Contract | Address |
 |----------|---------|
-| CeitnotEngine (implementation) | `N/A (not set in frontend/.env)` |
+| CeitnotEngine (implementation) | `0x023463264bd5a21ad29a23aff150ba816bf985e2` |
 | CeitnotProxy (engine) | `0xf8631eA8D16f67A4FfBAb691dcF55c6d0D31b928` |
 | CeitnotUSD (ceitUSD) | `0x01C169D51BA6a218B92af77D4c36eD17B5Ef2115` |
 | CeitnotMarketRegistry | `0x41678342398f4827154120E8d7aA0c384B0c7015` |
