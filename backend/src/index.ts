@@ -17,6 +17,15 @@ app.use("/api/stats", statsRouter);
 app.use("/api/faucet", faucetRouter);
 app.use("/api", rpcRouter);
 
+/** Railway opens the service root URL — no SPA here, only JSON API. */
+app.get("/", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "ceitnot-backend",
+    health: "/api/health",
+  });
+});
+
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", service: "ceitnot-backend" });
 });
