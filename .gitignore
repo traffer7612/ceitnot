@@ -18,3 +18,5 @@ Thumbs.db
 .env*.local
 # Vercel `env pull` dumps (may include transient tokens)
 frontend/.env.vercel*
+
+.vercel
