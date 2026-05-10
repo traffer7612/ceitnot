@@ -3,12 +3,13 @@ import { useReadContract } from 'wagmi';
 import type { Address } from 'viem';
 import { ceitnotEngineAbi } from '../abi/ceitnotEngine';
 import { TARGET_CHAIN_ID, viteAddress } from './chainEnv';
+import { apiUrl } from './apiOrigin';
 
 export { TARGET_CHAIN_ID };
 
 async function fetchFromApi(): Promise<{ engine?: string; registry?: string }> {
   try {
-    const res = await fetch('/api/config/contracts');
+    const res = await fetch(apiUrl('/api/config/contracts'));
     if (!res.ok) return {};
     return res.json();
   } catch {

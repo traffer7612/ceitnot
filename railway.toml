@@ -1,0 +1,4 @@
+# Build API from repo root (backend/ has package.json; repo root does not).
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"

@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { apiUrl } from "../lib/apiOrigin";
 
 export type ContractsConfig = {
   engine: string;
@@ -6,7 +7,7 @@ export type ContractsConfig = {
 };
 
 async function fetchContracts(): Promise<ContractsConfig> {
-  const res = await fetch("/api/config/contracts");
+  const res = await fetch(apiUrl("/api/config/contracts"));
   if (!res.ok) throw new Error("Failed to fetch config");
   return res.json();
 }

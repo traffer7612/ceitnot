@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, Lock, Shield, Wallet, TrendingUp, Vote, Coins, ExternalLink } from 'lucide-react';
+import { ArrowRight, Lock, Shield, Wallet, TrendingUp, Vote, Coins, ExternalLink, Users } from 'lucide-react';
 import { TARGET_CHAIN_ID, viteAddress, viteAddressLegacy } from '../lib/chainEnv';
+import { usePublicStats } from '../hooks/usePublicStats';
 import { blockExplorerAddressUrl } from '../lib/explorer';
 import {
   DOCS_TREE_URL,
@@ -134,6 +135,24 @@ function LineChartSvg() {
   );
 }
 
+function ProtocolUsersLine() {
+  const { uniqueUsers, loading } = usePublicStats(TARGET_CHAIN_ID);
+  if (!loading && uniqueUsers === null) return null;
+  return (
+    <p className="flex flex-wrap items-center justify-center gap-2 text-sm text-ceitnot-muted mb-8 px-2">
+      <Users size={16} className="text-ceitnot-gold shrink-0" aria-hidden />
+      {loading ? (
+        <span className="animate-pulse">Loading stats…</span>
+      ) : (
+        <>
+          <span className="font-semibold text-ceitnot-ink tabular-nums">{uniqueUsers!.toLocaleString()}</span>
+          <span className="text-ceitnot-muted-2">unique wallets have interacted with the protocol</span>
+        </>
+      )}
+    </p>
+  );
+}
+
 export default function LandingPage() {
   const govTokenExplorer = GOVERNANCE_TOKEN_ADDRESS
     ? blockExplorerAddressUrl(TARGET_CHAIN_ID, GOVERNANCE_TOKEN_ADDRESS)
@@ -153,9 +172,10 @@ export default function LandingPage() {
             <br />
             <span className="page-title-accent">On your terms.</span>
           </h1>
-          <p className="lp-hero-sub text-lg text-ceitnot-ink/90 mb-10 max-w-xl mx-auto leading-relaxed">
+          <p className="lp-hero-sub text-lg text-ceitnot-ink/90 mb-6 max-w-xl mx-auto leading-relaxed">
             Deposit collateral. Borrow stablecoins. Everything on-chain, non-custodial.
           </p>
+          <ProtocolUsersLine />
           <Link
             to="/dashboard"
             className="lp-hero-cta inline-flex items-center gap-2 px-8 py-4 rounded-xl font-semibold bg-ceitnot-gold text-ceitnot-on-primary hover:bg-ceitnot-gold-bright transition-all hover:opacity-95"
