@@ -4,36 +4,29 @@ import {
   http,
   formatEther,
   defineChain,
-  parseAbiItem,
+  toEventSelector,
   getAddress,
   type Chain,
+  type Hex,
   type PublicClient,
 } from "viem";
 import { arbitrum, base, sepolia, foundry } from "viem/chains";
 
-/** Indexed `user` as topics[1] for each event */
-const ENGINE_USER_EVENTS = [
-  parseAbiItem(
-    "event CollateralDeposited(address indexed user, uint256 indexed marketId, uint256 shares)",
-  ),
-  parseAbiItem(
-    "event DepositAndBorrowed(address indexed user, uint256 indexed marketId, uint256 shares, uint256 borrowed)",
-  ),
-  parseAbiItem("event Borrowed(address indexed user, uint256 indexed marketId, uint256 amount)"),
-  parseAbiItem("event Repaid(address indexed user, uint256 indexed marketId, uint256 amount)"),
-  parseAbiItem(
-    "event RepaidAndWithdrawn(address indexed user, uint256 indexed marketId, uint256 repaid, uint256 withdrawShares)",
-  ),
-  parseAbiItem(
-    "event CollateralWithdrawn(address indexed user, uint256 indexed marketId, uint256 shares)",
-  ),
-  parseAbiItem(
-    "event Liquidated(address indexed user, address indexed liquidator, uint256 indexed marketId, uint256 repayAmount, uint256 collateralSeized)",
-  ),
-] as const;
+/** topics[0] for events where indexed user is topics[1]. */
+const ENGINE_USER_EVENT_SELECTORS = new Set<Hex>([
+  toEventSelector("CollateralDeposited(address,uint256,uint256)"),
+  toEventSelector("DepositAndBorrowed(address,uint256,uint256,uint256)"),
+  toEventSelector("Borrowed(address,uint256,uint256)"),
+  toEventSelector("Repaid(address,uint256,uint256)"),
+  toEventSelector("RepaidAndWithdrawn(address,uint256,uint256,uint256)"),
+  toEventSelector("CollateralWithdrawn(address,uint256,uint256)"),
+  toEventSelector("Liquidated(address,address,uint256,uint256,uint256)"),
+]);
 
-const USER_COUNT_CHUNK_BLOCKS = 4999n;
-const USER_COUNT_CACHE_MS = 120_000;
+/** Public RPCs often cap eth_getLogs to ~50k blocks/range. */
+const USER_COUNT_CHUNK_BLOCKS = 50_000n;
+const USER_COUNT_CHUNK_CONCURRENCY = 4;
+const USER_COUNT_CACHE_MS = 900_000;
 
 type UserCountCache = { count: number; expires: number };
 const userCountCache = new Map<string, UserCountCache>();
@@ -62,6 +55,14 @@ function deployBlockOrDefault(chainId: number, engineAddress?: `0x${string}`): b
   }
   return null;
 }
+function indexedAddressFromTopic(topic: Hex | undefined): `0x${string}` | null {
+  if (!topic || topic.length !== 66) return null;
+  try {
+    return getAddress(`0x${topic.slice(-40)}` as `0x${string}`);
+  } catch {
+    return null;
+  }
+}
 
 async function countUniqueEngineUsers(
   client: PublicClient,
@@ -72,31 +73,32 @@ async function countUniqueEngineUsers(
   if (fromBlock > latest) return 0;
 
   const users = new Set<string>();
+  const ranges: Array<{ fromBlock: bigint; toBlock: bigint }> = [];
   for (let start = fromBlock; start <= latest; start += USER_COUNT_CHUNK_BLOCKS) {
     const end =
       start + USER_COUNT_CHUNK_BLOCKS - 1n > latest ? latest : start + USER_COUNT_CHUNK_BLOCKS - 1n;
+    ranges.push({ fromBlock: start, toBlock: end });
+  }
+
+  for (let i = 0; i < ranges.length; i += USER_COUNT_CHUNK_CONCURRENCY) {
+    const batch = ranges.slice(i, i + USER_COUNT_CHUNK_CONCURRENCY);
     const logsArrays = await Promise.all(
-      ENGINE_USER_EVENTS.map((event) =>
+      batch.map((range) =>
         client
           .getLogs({
             address: engineAddress,
-            event,
-            fromBlock: start,
-            toBlock: end,
+            fromBlock: range.fromBlock,
+            toBlock: range.toBlock,
           })
           .catch(() => []),
       ),
     );
     for (const logs of logsArrays) {
       for (const log of logs) {
-        const t = log.topics[1];
-        if (t) {
-          try {
-            users.add(getAddress(t as `0x${string}`));
-          } catch {
-            /* ignore malformed */
-          }
-        }
+        const topic0 = log.topics[0] as Hex | undefined;
+        if (!topic0 || !ENGINE_USER_EVENT_SELECTORS.has(topic0)) continue;
+        const user = indexedAddressFromTopic(log.topics[1] as Hex | undefined);
+        if (user) users.add(user);
       }
     }
   }
@@ -225,15 +227,19 @@ statsRouter.get("/:chainId", async (req, res) => {
     return res.json({ totalDebt: "0", totalCollateralAssets: "0", uniqueUsers: null });
   }
   try {
+    const rpc = getRpc(chainId);
+    if (!rpc) {
+      return res.json({ totalDebt: "0", totalCollateralAssets: "0", uniqueUsers: null });
+    }
     const client = createPublicClient({
       chain,
-      transport: http(getRpc(chainId)),
+      transport: http(rpc, { timeout: 12_000, retryCount: 1 }),
     });
 
     const fromBlock = deployBlockOrDefault(chainId, engineAddress);
     let uniqueUsers: number | null = null;
     if (fromBlock !== null) {
-      const cacheKey = `${chainId}-${engineAddress}-${fromBlock}`;
+      const cacheKey = `${chainId}-${engineAddress.toLowerCase()}-${fromBlock}`;
       const now = Date.now();
       const hit = userCountCache.get(cacheKey);
       if (hit && hit.expires > now) {

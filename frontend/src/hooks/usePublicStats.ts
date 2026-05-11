@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { apiUrl } from '../lib/apiOrigin';
+const PUBLIC_STATS_TIMEOUT_MS = 25_000;
 
 export type PublicStatsState = {
   uniqueUsers: number | null;
@@ -13,8 +14,10 @@ export function usePublicStats(chainId: number): PublicStatsState {
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), PUBLIC_STATS_TIMEOUT_MS);
     setLoading(true);
-    fetch(apiUrl(`/api/stats/${chainId}`))
+    fetch(apiUrl(`/api/stats/${chainId}`), { signal: controller.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('stats'))))
       .then((j: { uniqueUsers?: number | null }) => {
         if (cancelled) return;
@@ -25,10 +28,13 @@ export function usePublicStats(chainId: number): PublicStatsState {
         if (!cancelled) setUniqueUsers(null);
       })
       .finally(() => {
+        clearTimeout(timeoutId);
         if (!cancelled) setLoading(false);
       });
     return () => {
       cancelled = true;
+      clearTimeout(timeoutId);
+      controller.abort();
     };
   }, [chainId]);
 
