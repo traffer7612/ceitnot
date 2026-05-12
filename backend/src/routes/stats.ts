@@ -6,6 +6,7 @@ import {
   defineChain,
   toEventSelector,
   getAddress,
+  parseAbiItem,
   type Chain,
   type Hex,
   type PublicClient,
@@ -22,10 +23,19 @@ const ENGINE_USER_EVENT_SELECTORS = new Set<Hex>([
   toEventSelector("CollateralWithdrawn(address,uint256,uint256)"),
   toEventSelector("Liquidated(address,address,uint256,uint256,uint256)"),
 ]);
+const ENGINE_USER_EVENTS = [
+  parseAbiItem("event CollateralDeposited(address indexed user, uint256 indexed marketId, uint256 assets)"),
+  parseAbiItem("event DepositAndBorrowed(address indexed user, uint256 indexed marketId, uint256 collateralAssets, uint256 borrowedAssets)"),
+  parseAbiItem("event Borrowed(address indexed user, uint256 indexed marketId, uint256 assets)"),
+  parseAbiItem("event Repaid(address indexed user, uint256 indexed marketId, uint256 assets)"),
+  parseAbiItem("event RepaidAndWithdrawn(address indexed user, uint256 indexed marketId, uint256 repaidAssets, uint256 withdrawnAssets)"),
+  parseAbiItem("event CollateralWithdrawn(address indexed user, uint256 indexed marketId, uint256 assets)"),
+  parseAbiItem("event Liquidated(address indexed liquidator, address indexed user, uint256 indexed marketId, uint256 repaidDebtAssets, uint256 collateralSeizedAssets)"),
+] as const;
 
 /** Public RPCs often cap eth_getLogs to ~50k blocks/range. */
 const USER_COUNT_CHUNK_BLOCKS = 50_000n;
-const USER_COUNT_CHUNK_CONCURRENCY = 4;
+const USER_COUNT_CHUNK_CONCURRENCY = 8;
 const USER_COUNT_CACHE_MS = 900_000;
 
 type UserCountCache = { count: number; expires: number };
@@ -89,6 +99,7 @@ async function countUniqueEngineUsers(
             address: engineAddress,
             fromBlock: range.fromBlock,
             toBlock: range.toBlock,
+            events: ENGINE_USER_EVENTS,
           })
           .catch(() => []),
       ),
@@ -218,7 +229,17 @@ const chains: Record<number, Chain> = {
 
 statsRouter.get("/:chainId", async (req, res) => {
   const chainId = Number(req.params.chainId);
-  const engineAddress = process.env.CEITNOT_ENGINE_ADDRESS as `0x${string}` | undefined;
+  const rawEngineAddress = process.env.CEITNOT_ENGINE_ADDRESS?.trim();
+  const engineAddress =
+    rawEngineAddress && rawEngineAddress.length > 0
+      ? (() => {
+          try {
+            return getAddress(rawEngineAddress);
+          } catch {
+            return undefined;
+          }
+        })()
+      : undefined;
   if (!engineAddress) {
     return res.json({ totalDebt: "0", totalCollateralAssets: "0", uniqueUsers: null });
   }

@@ -177,6 +177,7 @@ export const governorAbi = [
   { inputs: [{ name: 'proposalId', type: 'uint256' }, { name: 'account', type: 'address' }], name: 'hasVoted', outputs: [{ name: '', type: 'bool' }], stateMutability: 'view', type: 'function' },
   { inputs: [{ name: 'proposalId', type: 'uint256' }], name: 'proposalSnapshot', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
   { inputs: [{ name: 'proposalId', type: 'uint256' }], name: 'proposalDeadline', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
+  { inputs: [{ name: 'proposalId', type: 'uint256' }], name: 'proposalProposer', outputs: [{ name: '', type: 'address' }], stateMutability: 'view', type: 'function' },
   {
     inputs: [
       { name: 'targets', type: 'address[]' },

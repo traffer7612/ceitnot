@@ -39,24 +39,23 @@ const FEED_DEBUG_ERRORS_LIMIT = 10;
  * Fetch logs in bounded chunks and adapt chunk size when provider returns range-limit errors.
  */
 const RPC_LOG_CHUNK_BY_CHAIN: Record<number, bigint> = {
-  42161: 50_000n,
+  42161: 250_000n,
   421614: 50_000n,
 };
 
 const RPC_LOG_MAX_CHUNKS_BY_CHAIN: Record<number, number> = {
-  42161: 20,
+  42161: 48,
   421614: 64,
 };
 
 const RPC_LOG_DEEP_MAX_CHUNKS_BY_CHAIN: Record<number, number> = {
-  42161: 60,
+  42161: 64,
   421614: 220,
 };
 const RPC_LOG_SCAN_DURATION_MS_BY_CHAIN: Record<number, number> = {
-  42161: 14_000,
+  42161: 25_000,
   421614: 15_000,
 };
-const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000' as Address;
 
 function preferredLogChunk(chainId: number): bigint {
   return RPC_LOG_CHUNK_BY_CHAIN[chainId] ?? 45_000n;
@@ -77,7 +76,7 @@ function preferredLogScanDurationMs(chainId: number): number {
 function fallbackActivityFromBlock(latestBlock: bigint, chainId: number): bigint {
   const spanByChain: Record<number, bigint> = {
     421614: 120_000n,
-    42161: 400_000n,
+    42161: 3_000_000n,
     8453: 300_000n,
     11155111: 120_000n,
   };
@@ -109,7 +108,7 @@ function govParseWadCap(v: string): bigint {
  */
 function governanceLogsFromBlock(latestBlock: bigint, chainId: number): bigint {
   const spanByChain: Record<number, bigint> = {
-    42161: 18_000_000n,   // Arbitrum One — ~weeks of history at typical L2 cadence
+    42161: 12_000_000n,
     421614: 18_000_000n,  // Arbitrum Sepolia — L2 cadence similar to One
     8453: 6_000_000n,     // Base
     11155111: 400_000n,   // Sepolia ~12s blocks → ~8 weeks
@@ -120,7 +119,7 @@ function governanceLogsFromBlock(latestBlock: bigint, chainId: number): bigint {
 
 function governanceLogsDeepFromBlock(latestBlock: bigint, chainId: number): bigint {
   const spanByChain: Record<number, bigint> = {
-    42161: 30_000_000n,
+    42161: 12_000_000n,
     421614: 30_000_000n,
     8453: 12_000_000n,
     11155111: 800_000n,
@@ -730,6 +729,15 @@ export default function GovernancePage() {
         } as Parameters<NonNullable<typeof publicClient>['getLogs']>[0]);
       }
       if (resolvedFromBlock > resolvedToBlock) return [];
+      try {
+        return await publicClient.getLogs({
+          ...request,
+          fromBlock: resolvedFromBlock,
+          toBlock: resolvedToBlock,
+        } as Parameters<NonNullable<typeof publicClient>['getLogs']>[0]);
+      } catch (directErr: unknown) {
+        emitDiagnostic('full-range query failed, falling back to chunked scan', directErr);
+      }
       const maxChunks = Math.max(1, options?.maxChunks ?? maxLogChunks(TARGET_CHAIN_ID));
       let dynamicChunk = options?.chunkSize ?? preferredLogChunk(TARGET_CHAIN_ID);
       if (dynamicChunk <= 0n) dynamicChunk = 1n;
@@ -1081,7 +1089,7 @@ export default function GovernancePage() {
       setActivityFeed(activity);
       const titles: Record<string, string> = { ...quickTitles };
       const missingTitleIds = stateLookupIds.filter((id) => !titles[id.toString()]);
-      if (missingTitleIds.length > 0 && TARGET_CHAIN_ID !== 42161) {
+      if (missingTitleIds.length > 0) {
         const deepFromBlock = governanceLogsDeepFromBlock(latestBlock, TARGET_CHAIN_ID);
         const deepCreatedLogs = await getLogsWithSafeRange({
           address: GOVERNOR,
@@ -1125,23 +1133,65 @@ export default function GovernancePage() {
         return buildProposalFeedItemFromLog(log, stateMap.get(args.proposalId));
       }));
       if (withState.length === 0 && recentProposalIdsByActivity.length > 0) {
-        withState = recentProposalIdsByActivity
-          .slice(0, PROPOSAL_FEED_FALLBACK_COUNT)
-          .map((proposalId) => {
-            const existing = payloadById[proposalId.toString()];
-            if (existing) return existing;
-            return {
+        const fallbackItems: ProposalFeedItem[] = [];
+        const fallbackIds = recentProposalIdsByActivity.slice(0, PROPOSAL_FEED_FALLBACK_COUNT);
+        for (const proposalId of fallbackIds) {
+          const existing = payloadById[proposalId.toString()];
+          if (existing) {
+            fallbackItems.push(existing);
+            continue;
+          }
+          try {
+            // Governor can expose proposal metadata even when ProposalCreated logs are unavailable on current RPC.
+            // Keep this sequential to avoid rate-limit bursts on public providers.
+            // eslint-disable-next-line no-await-in-loop
+            const proposer = await publicClient.readContract({
+              address: GOVERNOR,
+              abi: governorAbi,
+              functionName: 'proposalProposer',
+              args: [proposalId],
+            });
+            // eslint-disable-next-line no-await-in-loop
+            const voteStart = await publicClient.readContract({
+              address: GOVERNOR,
+              abi: governorAbi,
+              functionName: 'proposalSnapshot',
+              args: [proposalId],
+            });
+            // eslint-disable-next-line no-await-in-loop
+            const voteEnd = await publicClient.readContract({
+              address: GOVERNOR,
+              abi: governorAbi,
+              functionName: 'proposalDeadline',
+              args: [proposalId],
+            });
+            let state = stateMap.get(proposalId);
+            if (state === undefined) {
+              // eslint-disable-next-line no-await-in-loop
+              const st = await publicClient.readContract({
+                address: GOVERNOR,
+                abi: governorAbi,
+                functionName: 'state',
+                args: [proposalId],
+              });
+              state = Number(st);
+            }
+            fallbackItems.push({
               proposalId,
-              proposer: ZERO_ADDRESS,
+              proposer,
               targets: [],
               values: [],
               calldatas: [],
-              description: titles[proposalId.toString()] ?? 'Governance proposal',
-              voteStart: 0n,
-              voteEnd: 0n,
-              state: stateMap.get(proposalId),
-            } satisfies ProposalFeedItem;
-          });
+              description: titles[proposalId.toString()] ?? 'Description unavailable (event log not found)',
+              voteStart,
+              voteEnd,
+              state,
+            });
+          } catch {
+            // Skip unknown/non-existent proposal ids instead of rendering misleading zero-value placeholders.
+          }
+        }
+        withState = fallbackItems;
       }
 
       setProposalPayloadById(payloadById);

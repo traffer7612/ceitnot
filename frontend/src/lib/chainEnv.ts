@@ -56,12 +56,18 @@ export function viteMockEthUsd8Dec(): bigint {
 }
 
 export function hiddenMarketIds(): Set<number> {
+  const hidden = new Set<number>();
+  // Production Arbitrum: hide iwstETH and legacy non-working iDAI markets from public lists.
+  if (TARGET_CHAIN_ID === 42161) {
+    hidden.add(2);
+    hidden.add(3);
+  }
   const raw = normalizeEnvString(import.meta.env.VITE_HIDDEN_MARKET_IDS as string | undefined);
-  if (!raw) return new Set();
-  return new Set(
-    raw
-      .split(',')
-      .map(s => parseInt(s.trim(), 10))
-      .filter(n => Number.isFinite(n) && n >= 0),
-  );
+  if (!raw) return hidden;
+  raw
+    .split(',')
+    .map(s => parseInt(s.trim(), 10))
+    .filter(n => Number.isFinite(n) && n >= 0)
+    .forEach(n => hidden.add(n));
+  return hidden;
 }

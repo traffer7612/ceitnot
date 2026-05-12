@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { apiUrl } from '../lib/apiOrigin';
-const PUBLIC_STATS_TIMEOUT_MS = 25_000;
+const PUBLIC_STATS_TIMEOUT_MS = 90_000;
 
 export type PublicStatsState = {
   uniqueUsers: number | null;

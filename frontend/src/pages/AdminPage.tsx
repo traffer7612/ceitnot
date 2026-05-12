@@ -219,6 +219,7 @@ function MarketManageCard({ market, registry, gas, onSuccess }: {
   const mid = BigInt(market.id);
   const pctToBps = (v: string) => Math.round(Number(v) * 100);
   const parseWad = (v: string) => { try { return v ? parseUnits(v, 18) : 0n; } catch { return 0n; } };
+  const parseRay = (v: string) => { try { return v ? parseUnits(v, 27) : 0n; } catch { return 0n; } };
 
   useEffect(() => {
     if (confirmed && hash) { onSuccess(); setErrMsg(''); setHash(undefined); }
@@ -315,13 +316,13 @@ function MarketManageCard({ market, registry, gas, onSuccess }: {
           {tab === 'irm' && (
             <div className="space-y-3">
               <div className="grid grid-cols-2 gap-3">
-                <InputField label="Base Rate (WAD)" value={baseRate} onChange={setBaseRate} placeholder="e.g. 0.02" hint="Annual base rate" />
-                <InputField label="Slope 1 (WAD)" value={slope1} onChange={setSlope1} placeholder="e.g. 0.04" hint="Rate below kink" />
-                <InputField label="Slope 2 (WAD)" value={slope2} onChange={setSlope2} placeholder="e.g. 3.0" hint="Rate above kink" />
-                <InputField label="Kink (WAD)" value={kink} onChange={setKink} placeholder="e.g. 0.8" hint="Utilization breakpoint" />
+                <InputField label="Base Rate (fraction)" value={baseRate} onChange={setBaseRate} placeholder="e.g. 0.00" hint="RAY-scaled fraction, e.g. 0.04 = 4%" />
+                <InputField label="Slope 1 (fraction)" value={slope1} onChange={setSlope1} placeholder="e.g. 0.04" hint="RAY-scaled fraction below kink" />
+                <InputField label="Slope 2 (fraction)" value={slope2} onChange={setSlope2} placeholder="e.g. 3.00" hint="RAY-scaled fraction above kink" />
+                <InputField label="Kink (fraction)" value={kink} onChange={setKink} placeholder="e.g. 0.80" hint="RAY-scaled utilization (0..1)" />
                 <InputField label="Reserve Factor (%)" value={reserveFactor} onChange={setReserveFactor} type="number" placeholder="10" hint="Protocol's interest share" />
               </div>
-              <button onClick={() => exec(() => writeContractAsync({ address: registry, abi: marketRegistryAbi, functionName: 'updateMarketIrmParams', args: [mid, parseWad(baseRate), parseWad(slope1), parseWad(slope2), parseWad(kink), pctToBps(reserveFactor)], ...gas }))} disabled={isPending} className="btn-primary text-xs">Update IRM</button>
+              <button onClick={() => exec(() => writeContractAsync({ address: registry, abi: marketRegistryAbi, functionName: 'updateMarketIrmParams', args: [mid, parseRay(baseRate), parseRay(slope1), parseRay(slope2), parseRay(kink), pctToBps(reserveFactor)], ...gas }))} disabled={isPending} className="btn-primary text-xs">Update IRM</button>
             </div>
           )}
 

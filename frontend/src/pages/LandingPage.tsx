@@ -155,9 +155,10 @@ function ProtocolUsersLine() {
           </>
         ) : (
           <span className="text-ceitnot-muted-2 max-w-md text-center">
-            Live wallet count isn&apos;t available yet—set{' '}
-            <code className="font-mono text-[11px] px-1 rounded bg-ceitnot-surface-2">CEITNOT_ENGINE_DEPLOY_BLOCK</code> on
-            the API (Railway).
+            Live wallet count isn&apos;t available right now—check stats API config on Railway (
+            <code className="font-mono text-[11px] px-1 rounded bg-ceitnot-surface-2">CEITNOT_ENGINE_ADDRESS</code>,{' '}
+            <code className="font-mono text-[11px] px-1 rounded bg-ceitnot-surface-2">CEITNOT_ENGINE_DEPLOY_BLOCK</code>,{' '}
+            <code className="font-mono text-[11px] px-1 rounded bg-ceitnot-surface-2">ARBITRUM_RPC_URL</code>).
           </span>
         )}
       </p>

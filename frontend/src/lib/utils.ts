@@ -38,10 +38,10 @@ export function formatBps(bps: bigint | undefined, dp = 2): string {
   return (Number(bps) / 100).toFixed(dp) + '%';
 }
 
-/** Format a WAD rate as an annual % e.g. 0.05e18 → "5.00%" */
+/** Format a RAY fraction as % (used for IRM params in market config): 0.8e27 -> "80.00%" */
 export function formatRate(v: bigint | undefined): string {
   if (v === undefined) return '—';
-  return (Number(formatUnits(v, 18)) * 100).toFixed(2) + '%';
+  return (Number(formatUnits(v, 27)) * 100).toFixed(2) + '%';
 }
 
 /** Shorten "0x1234…5678" */

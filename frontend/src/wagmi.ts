@@ -40,10 +40,9 @@ export const targetChain = chainFor(TARGET_CHAIN_ID);
 export const SUPPORTED_CHAIN_IDS = [targetChain.id] as const;
 
 const PUBLIC_ARBITRUM_RPCS = [
+  'https://arb1.arbitrum.io/rpc',
+  'https://arbitrum.gateway.tenderly.co',
   'https://arbitrum-one.publicnode.com',
-  'https://1rpc.io/arb',
-  'https://arbitrum.drpc.org',
-  'https://rpc.ankr.com/arbitrum',
 ] as const;
 
 const PUBLIC_SEPOLIA_RPCS = [
@@ -77,18 +76,14 @@ function uniqueUrls(urls: readonly (string | undefined)[]): string[] {
   return out;
 }
 function isKnownCorsUnsafeRpc(url: string, chainId: number): boolean {
-  try {
-    const host = new URL(url).hostname.toLowerCase();
-    if (chainId === 42161 && host === 'arb1.arbitrum.io') return true;
-  } catch {
-    return false;
-  }
+  void chainId;
+  void url;
   return false;
 }
 function isDeprioritizedRpc(url: string, chainId: number): boolean {
   try {
     const host = new URL(url).hostname.toLowerCase();
-    if (host.endsWith('infura.io') && (chainId === 42161 || chainId === 421614 || chainId === 11155111)) {
+    if (host.endsWith('infura.io') && (chainId === 421614 || chainId === 11155111)) {
       return true;
     }
   } catch {
@@ -104,7 +99,7 @@ function useDevRpcProxy(): boolean {
 }
 
 function fallbackHttp(urls: readonly string[]) {
-  const transports = urls.map((url) => http(url, { retryCount: 0, timeout: 12_000 }));
+  const transports = urls.map((url) => http(url, { retryCount: 0, timeout: 20_000 }));
   if (transports.length === 1) return transports[0];
   return fallback(transports);
 }
