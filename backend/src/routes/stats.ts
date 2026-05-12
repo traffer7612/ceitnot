@@ -4,25 +4,13 @@ import {
   http,
   formatEther,
   defineChain,
-  toEventSelector,
   getAddress,
   parseAbiItem,
   type Chain,
-  type Hex,
   type PublicClient,
 } from "viem";
 import { arbitrum, base, sepolia, foundry } from "viem/chains";
-
-/** topics[0] for events where indexed user is topics[1]. */
-const ENGINE_USER_EVENT_SELECTORS = new Set<Hex>([
-  toEventSelector("CollateralDeposited(address,uint256,uint256)"),
-  toEventSelector("DepositAndBorrowed(address,uint256,uint256,uint256)"),
-  toEventSelector("Borrowed(address,uint256,uint256)"),
-  toEventSelector("Repaid(address,uint256,uint256)"),
-  toEventSelector("RepaidAndWithdrawn(address,uint256,uint256,uint256)"),
-  toEventSelector("CollateralWithdrawn(address,uint256,uint256)"),
-  toEventSelector("Liquidated(address,address,uint256,uint256,uint256)"),
-]);
+/** Engine events that include `user` in decoded args. */
 const ENGINE_USER_EVENTS = [
   parseAbiItem("event CollateralDeposited(address indexed user, uint256 indexed marketId, uint256 assets)"),
   parseAbiItem("event DepositAndBorrowed(address indexed user, uint256 indexed marketId, uint256 collateralAssets, uint256 borrowedAssets)"),
@@ -40,6 +28,7 @@ const USER_COUNT_CACHE_MS = 900_000;
 
 type UserCountCache = { count: number; expires: number };
 const userCountCache = new Map<string, UserCountCache>();
+const userCountInFlight = new Map<string, Promise<number>>();
 
 /** Canonical CeitnotProxy on Arbitrum One — creation block from deployment tx (see docs/PRODUCTION-ADDRESSES-ARBITRUM.md). */
 const ARBITRUM_ONE_ENGINE_PROXY_LOWER =
@@ -65,10 +54,11 @@ function deployBlockOrDefault(chainId: number, engineAddress?: `0x${string}`): b
   }
   return null;
 }
-function indexedAddressFromTopic(topic: Hex | undefined): `0x${string}` | null {
-  if (!topic || topic.length !== 66) return null;
+function decodedUserFromLog(log: { args?: Record<string, unknown> }): `0x${string}` | null {
+  const user = log.args?.user;
+  if (typeof user !== "string") return null;
   try {
-    return getAddress(`0x${topic.slice(-40)}` as `0x${string}`);
+    return getAddress(user as `0x${string}`);
   } catch {
     return null;
   }
@@ -106,14 +96,30 @@ async function countUniqueEngineUsers(
     );
     for (const logs of logsArrays) {
       for (const log of logs) {
-        const topic0 = log.topics[0] as Hex | undefined;
-        if (!topic0 || !ENGINE_USER_EVENT_SELECTORS.has(topic0)) continue;
-        const user = indexedAddressFromTopic(log.topics[1] as Hex | undefined);
+        const user = decodedUserFromLog(log as { args?: Record<string, unknown> });
         if (user) users.add(user);
       }
     }
   }
   return users.size;
+}
+function refreshUniqueUsersInBackground(
+  cacheKey: string,
+  client: PublicClient,
+  engineAddress: `0x${string}`,
+  fromBlock: bigint,
+): void {
+  if (userCountInFlight.has(cacheKey)) return;
+  const pending = countUniqueEngineUsers(client, engineAddress, fromBlock)
+    .then((count) => {
+      userCountCache.set(cacheKey, { count, expires: Date.now() + USER_COUNT_CACHE_MS });
+      return count;
+    })
+    .catch(() => 0)
+    .finally(() => {
+      userCountInFlight.delete(cacheKey);
+    });
+  userCountInFlight.set(cacheKey, pending);
 }
 
 const arbitrumSepolia = defineChain({
@@ -263,11 +269,14 @@ statsRouter.get("/:chainId", async (req, res) => {
       const cacheKey = `${chainId}-${engineAddress.toLowerCase()}-${fromBlock}`;
       const now = Date.now();
       const hit = userCountCache.get(cacheKey);
-      if (hit && hit.expires > now) {
+      if (hit) {
         uniqueUsers = hit.count;
+        if (hit.expires <= now) {
+          refreshUniqueUsersInBackground(cacheKey, client, engineAddress, fromBlock);
+        }
       } else {
-        uniqueUsers = await countUniqueEngineUsers(client, engineAddress, fromBlock);
-        userCountCache.set(cacheKey, { count: uniqueUsers, expires: now + USER_COUNT_CACHE_MS });
+        uniqueUsers = 0;
+        refreshUniqueUsersInBackground(cacheKey, client, engineAddress, fromBlock);
       }
     }
 
