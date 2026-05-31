@@ -192,6 +192,27 @@ body {
   }
 }
 
+/* Network switcher native select:
+   keep option text readable across OS/theme defaults and make control clearly rounded. */
+.network-switcher-select {
+  border-radius: 0.625rem;
+  color: rgb(var(--ceitnot-ink) / 1);
+}
+.network-switcher-select:focus {
+  border-color: rgb(var(--ceitnot-gold) / 0.45);
+  box-shadow: 0 0 0 2px rgb(var(--ceitnot-gold) / 0.2);
+}
+.network-switcher-select option,
+.network-switcher-option {
+  color: rgb(15 23 42 / 1);
+  background-color: rgb(255 255 255 / 1);
+}
+html[data-theme="dark"] .network-switcher-select option,
+html[data-theme="dark"] .network-switcher-option {
+  color: rgb(244 244 245 / 1);
+  background-color: rgb(26 24 40 / 1);
+}
+
 /* Skeleton shimmer */
 .skeleton {
   background: linear-gradient(

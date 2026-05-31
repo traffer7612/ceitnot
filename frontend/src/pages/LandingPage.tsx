@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, Lock, Shield, Wallet, TrendingUp, Vote, Coins, ExternalLink, Users } from 'lucide-react';
-import { TARGET_CHAIN_ID, LANDING_STATS_CHAIN_ID, viteAddress, viteAddressLegacy } from '../lib/chainEnv';
+import { TARGET_CHAIN_ID, LANDING_STATS_CHAIN_ID, contractAddress } from '../lib/chainEnv';
 import { usePublicStats } from '../hooks/usePublicStats';
 import { blockExplorerAddressUrl } from '../lib/explorer';
 import {
@@ -10,14 +10,10 @@ import {
   DOC_PRODUCTION_ADDRESSES_URL,
 } from '../lib/publicDocs';
 
-const TIMELOCK_ENV = import.meta.env.VITE_TIMELOCK_ADDRESS as string | undefined;
-const GOVERNANCE_TOKEN_ADDRESS = viteAddress(import.meta.env.VITE_GOVERNANCE_TOKEN_ADDRESS as string | undefined);
-const CEITUSD_TOKEN_ADDRESS =
-  viteAddress(import.meta.env.VITE_CEITUSD_ADDRESS as string | undefined)
-  ?? viteAddressLegacy(
-    import.meta.env.VITE_AUSD_ADDRESS as string | undefined,
-    import.meta.env.VITE_DEBT_TOKEN_ADDRESS as string | undefined,
-  );
+const TIMELOCK_ENV = contractAddress('TIMELOCK');
+const ENGINE_ADDRESS = contractAddress('ENGINE');
+const GOVERNANCE_TOKEN_ADDRESS = contractAddress('GOVERNANCE_TOKEN');
+const CEITUSD_TOKEN_ADDRESS = contractAddress('CEITUSD') ?? contractAddress('AUSD');
 
 const CHART_BARS = [38, 62, 48, 78, 55, 88, 68, 82, 58, 92, 72, 85];
 
@@ -135,8 +131,16 @@ function LineChartSvg() {
   );
 }
 
+function shortAddress(address: string): string {
+  if (address.length <= 12) return address;
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
+
 function ProtocolUsersLine() {
-  const { uniqueUsers, loading } = usePublicStats(LANDING_STATS_CHAIN_ID);
+  const { uniqueUsers, galxe, loading } = usePublicStats(LANDING_STATS_CHAIN_ID);
+  const hasGalxe = Boolean(galxe?.configured);
+  const engineExplorerUrl =
+    ENGINE_ADDRESS && blockExplorerAddressUrl(LANDING_STATS_CHAIN_ID, ENGINE_ADDRESS);
   return (
     <div
       className="mb-8 mx-auto max-w-lg rounded-xl border border-ceitnot-border bg-ceitnot-surface/60 px-4 py-3 shadow-sm"
@@ -162,6 +166,76 @@ function ProtocolUsersLine() {
           </span>
         )}
       </p>
+      {engineExplorerUrl && ENGINE_ADDRESS && (
+        <p className="mt-2 text-center">
+          <a
+            href={engineExplorerUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center gap-1.5 text-xs font-medium text-ceitnot-gold hover:text-ceitnot-ink hover:underline transition-colors"
+            title={ENGINE_ADDRESS}
+          >
+            <ExternalLink size={13} aria-hidden />
+            <span>Ceitnot Engine</span>
+            <span className="font-mono text-[11px] text-ceitnot-muted-2">{shortAddress(ENGINE_ADDRESS)}</span>
+          </a>
+        </p>
+      )}
+      {hasGalxe && (
+        <div className="mt-3 border-t border-ceitnot-border/70 pt-3">
+          <p className="text-[11px] uppercase tracking-wide text-ceitnot-muted text-center mb-1.5">Galxe subgraph</p>
+          {loading ? (
+            <p className="text-sm text-ceitnot-muted text-center animate-pulse">Loading Galxe leaderboard…</p>
+          ) : galxe?.available ? (
+            <>
+              <p className="text-sm text-ceitnot-muted text-center">
+                {galxe.participantsCount !== null ? (
+                  <>
+                    <span className="font-semibold text-ceitnot-ink tabular-nums">
+                      {galxe.participantsCount.toLocaleString()}
+                    </span>{' '}
+                    participants
+                  </>
+                ) : (
+                  <span>Participants count not provided by endpoint</span>
+                )}
+                {galxe.samplePointsTotal !== null && (
+                  <>
+                    {' '}
+                    · sample points:{' '}
+                    <span className="font-semibold text-ceitnot-ink tabular-nums">
+                      {Math.round(galxe.samplePointsTotal).toLocaleString()}
+                    </span>
+                  </>
+                )}
+              </p>
+              {galxe.wallets.length > 0 && (
+                <div className="mt-2 flex flex-wrap items-center justify-center gap-1.5">
+                  {galxe.wallets.map((wallet) => (
+                    <span
+                      key={`${wallet.address}-${wallet.rank ?? 'na'}`}
+                      className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-ceitnot-border bg-ceitnot-surface-2 px-2 py-0.5 text-[11px] text-ceitnot-muted-2"
+                      title={wallet.address}
+                    >
+                      {wallet.rank !== null && (
+                        <span className="font-semibold text-ceitnot-gold tabular-nums">#{wallet.rank}</span>
+                      )}
+                      <span className="max-w-[9rem] truncate">{wallet.username ?? shortAddress(wallet.address)}</span>
+                      {wallet.points !== null && (
+                        <span className="text-ceitnot-muted tabular-nums">{Math.round(wallet.points)}</span>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="text-xs text-ceitnot-muted-2 text-center">
+              Galxe stats are configured but temporarily unavailable.
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -206,11 +280,11 @@ export default function LandingPage() {
         <div className="max-w-4xl mx-auto">
           <h2 className="lp-fade text-xl font-bold text-center mb-1 text-ceitnot-ink">Protocol metrics</h2>
           <p className="lp-fade text-sm text-center mb-10 text-ceitnot-muted-2">TVL & growth</p>
-          <div className="lp-chart-row group flex items-end justify-center gap-2 h-40 mb-14">
+          <div className="lp-chart-row group flex items-end justify-center gap-1 sm:gap-2 h-40 mb-14 overflow-hidden">
             {CHART_BARS.map((h, i) => (
               <div
                 key={i}
-                className="lp-bar rounded-t min-w-[28px] max-w-[40px] flex-1 cursor-pointer transition-all duration-300 ease-out"
+                className="lp-bar rounded-t min-w-[18px] sm:min-w-[24px] lg:min-w-[28px] max-w-[40px] flex-1 cursor-pointer transition-all duration-300 ease-out"
                 style={{ height: `${h}%`, animationDelay: `${0.05 * i}s` }}
                 title={`${h}%`}
               >

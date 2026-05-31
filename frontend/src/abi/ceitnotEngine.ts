@@ -159,11 +159,23 @@ export const ceitnotPsmAbi = [
   { inputs: [], name: 'mintedViaPsm', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
   { inputs: [], name: 'feeReserves', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
   { inputs: [], name: 'availableReserves', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'maxSwapInPeg', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
+  { inputs: [], name: 'maxSwapOutAusd', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
   { inputs: [], name: 'admin', outputs: [{ name: '', type: 'address' }], stateMutability: 'view', type: 'function' },
   { inputs: [{ name: 'amount', type: 'uint256' }], name: 'swapIn', outputs: [{ name: 'ausdOut', type: 'uint256' }], stateMutability: 'nonpayable', type: 'function' },
   { inputs: [{ name: 'amount', type: 'uint256' }], name: 'swapOut', outputs: [{ name: 'stableOut', type: 'uint256' }], stateMutability: 'nonpayable', type: 'function' },
   { inputs: [{ name: 'to', type: 'address' }, { name: 'amount', type: 'uint256' }], name: 'withdrawFeeReserves', outputs: [], stateMutability: 'nonpayable', type: 'function' },
   { inputs: [{ name: 'to', type: 'address' }, { name: 'amount', type: 'uint256' }], name: 'withdrawLiquidity', outputs: [], stateMutability: 'nonpayable', type: 'function' },
+  {
+    inputs: [
+      { name: 'maxSwapInPeg_', type: 'uint256' },
+      { name: 'maxSwapOutAusd_', type: 'uint256' },
+    ],
+    name: 'setSwapLimits',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
 ] as const;
 
 // ─── Governor ABI (OpenZeppelin Governor v5) ─────────────────────────────────

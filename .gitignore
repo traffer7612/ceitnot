@@ -20,3 +20,10 @@ Thumbs.db
 frontend/.env.vercel*
 
 .vercel
+
+# Sepolia bot secrets / local exports
+tools/sepolia-wallet-bot/wallets.txt
+tools/sepolia-wallet-bot/.env
+tools/sepolia-wallet-bot/engine-users-*
+frontend/.env.backup
+frontend/.env.sepolia.from-vercel

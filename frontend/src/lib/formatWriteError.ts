@@ -32,11 +32,23 @@ export function formatWriteContractError(err: unknown, abi?: Abi): string {
 
 /** Short user hint for known Ceitnot engine custom errors (RU). */
 export function hintForEngineError(decodedLine: string): string | undefined {
-  if (decodedLine.includes('Ceitnot__SameBlockInteraction'))
+  const lower = decodedLine.toLowerCase();
+  if (decodedLine.includes('Ceitnot__SameBlockInteraction') || lower.includes('0x416d8cff'))
     return 'В одном блоке по этому рынку уже была операция. Подождите следующий блок или отправьте одну транзакцию.';
-  if (decodedLine.includes('Ceitnot__IsolationViolation'))
+  if (decodedLine.includes('Ceitnot__HealthFactorBelowOne') || lower.includes('0x9e0636a3'))
+    return 'После такого withdraw health factor будет ниже 1.0. Сначала погасите часть долга или выводите меньше collateral.';
+  if (decodedLine.includes('Ceitnot__InsufficientCollateral') || lower.includes('0xc1c71392'))
+    return 'Сумма вывода больше, чем collateral shares в позиции.';
+  if (decodedLine.includes('Ceitnot__ExceedsLTV') || lower.includes('0x7e188118'))
+    return 'Сумма borrow превышает LTV лимит рынка. Уменьшите сумму или увеличьте collateral.';
+  if (decodedLine.includes('Ceitnot__IsolationViolation') || lower.includes('0x8f0293e9'))
     return 'Режим изоляции: нельзя иметь залог/долг на другом рынке одновременно с этим.';
-  if (decodedLine.includes('Ceitnot__InvalidParams'))
+  if (
+    decodedLine.includes('CeitnotUSD__InsufficientAllowance')
+    || lower.includes('0xf4d0de6c')
+  )
+    return 'Недостаточно allowance на ceitUSD для контракта (Engine при Repay или PSM при swap ceitUSD→USDC). Нажмите Approve ещё раз; в кошельке лучше unlimited, не точную сумму. Если меняли сумму после approve — approve заново.';
+  if (decodedLine.includes('Ceitnot__InvalidParams') || lower.includes('0x10867118'))
     return 'Часто не хватает approve на Engine для vault shares, или vault не принял transferFrom.';
   if (decodedLine.includes('Ceitnot__MarketFrozen')) return 'Рынок заморожен (frozen).';
   if (decodedLine.includes('Ceitnot__MarketInactive')) return 'Рынок выключен (inactive).';

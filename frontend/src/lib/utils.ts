@@ -2,6 +2,7 @@ import { formatUnits } from 'viem';
 
 export const WAD         = 10n ** 18n;
 export const MAX_UINT256 = 2n ** 256n - 1n;
+const SECONDS_PER_YEAR   = 31_536_000n;
 
 /** ERC-20 `decimals()` as number (OZ returns uint8; viem may surface bigint). */
 export function erc20Decimals(d: number | bigint | undefined, fallback = 18): number {
@@ -12,10 +13,17 @@ export function erc20Decimals(d: number | bigint | undefined, fallback = 18): nu
 /** Format a WAD (1e18) bigint as a human number string */
 export function formatWad(v: bigint | undefined, dp = 4): string {
   if (v === undefined) return '—';
-  return Number(formatUnits(v, 18)).toLocaleString(undefined, {
+  return formatToken(v, 18, dp, 'en-US');
+}
+
+/** Format a WAD (1e18) bigint in compact notation (e.g. 90T). */
+export function formatWadCompact(v: bigint | undefined, dp = 2): string {
+  if (v === undefined) return '—';
+  return new Intl.NumberFormat('en-US', {
+    notation: 'compact',
     minimumFractionDigits: 0,
     maximumFractionDigits: dp,
-  });
+  }).format(Number(formatUnits(v, 18)));
 }
 
 /** Format any token with its decimals (`locale` e.g. `'en-US'` avoids comma decimals in RU locale). */
@@ -42,6 +50,13 @@ export function formatBps(bps: bigint | undefined, dp = 2): string {
 export function formatRate(v: bigint | undefined): string {
   if (v === undefined) return '—';
   return (Number(formatUnits(v, 27)) * 100).toFixed(2) + '%';
+}
+
+/** Format per-second RAY interest rate as annualized APR % (e.g. 3.17e17 -> ~1.00%). */
+export function formatRateApr(v: bigint | undefined, dp = 2): string {
+  if (v === undefined) return '—';
+  const annualFraction = Number(formatUnits(v * SECONDS_PER_YEAR, 27));
+  return (annualFraction * 100).toFixed(dp) + '%';
 }
 
 /** Shorten "0x1234…5678" */

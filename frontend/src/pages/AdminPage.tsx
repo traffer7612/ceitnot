@@ -10,11 +10,11 @@ import {
 import { ceitnotEngineAbi, marketRegistryAbi, ceitnotPsmAbi } from '../abi/ceitnotEngine';
 import { useAdmin } from '../hooks/useAdmin';
 import { useContractAddresses, gasFor, TARGET_CHAIN_ID } from '../lib/contracts';
+import { contractAddress } from '../lib/chainEnv';
 import { blockExplorerAddressUrl } from '../lib/explorer';
 import { useMarkets, type Market } from '../hooks/useMarkets';
 import { formatAddress, formatBps, formatWad } from '../lib/utils';
-
-const TIMELOCK_ENV = import.meta.env.VITE_TIMELOCK_ADDRESS as Address | undefined;
+const TIMELOCK_ENV = contractAddress('TIMELOCK');
 
 /* ─── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -374,7 +374,7 @@ export default function AdminPage() {
   const [psmLiqTo, setPsmLiqTo] = useState('');
   const [psmLiqAmount, setPsmLiqAmount] = useState('');
   const [hash, setHash] = useState<Hash | undefined>();
-  const psmAddress = import.meta.env.VITE_PSM_ADDRESS as Address | undefined;
+  const psmAddress = contractAddress('PSM');
 
   const { data: psmData, refetch: refetchPsm } = useReadContracts({
     contracts: psmAddress ? [

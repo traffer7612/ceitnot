@@ -3,10 +3,10 @@ import type { LucideIcon } from 'lucide-react';
 import { BarChart3, Wallet, ArrowRight, TrendingUp, Layers, DollarSign, Activity } from 'lucide-react';
 import { useAdmin } from '../hooks/useAdmin';
 import { useMarkets } from '../hooks/useMarkets';
-import { formatWad, formatBps, formatAddress } from '../lib/utils';
+import { formatWad, formatWadCompact, formatBps, formatAddress } from '../lib/utils';
 import { useContractAddresses } from '../lib/contracts';
 
-function StatCard({ label, value, sub, icon: Icon }: { label: string; value: string; sub?: string; icon: LucideIcon }) {
+function StatCard({ label, value, sub, icon: Icon, valueTitle }: { label: string; value: string; sub?: string; icon: LucideIcon; valueTitle?: string }) {
   return (
     <div className="stat-card hover:border-ceitnot-border-2 transition-colors group">
       <div className="flex items-center justify-between mb-3">
@@ -15,7 +15,7 @@ function StatCard({ label, value, sub, icon: Icon }: { label: string; value: str
           <Icon size={14} />
         </div>
       </div>
-      <div className="stat-value">{value}</div>
+      <div className="stat-value truncate" title={valueTitle ?? value}>{value}</div>
       {sub && <div className="text-xs text-ceitnot-muted mt-0.5">{sub}</div>}
     </div>
   );
@@ -77,7 +77,13 @@ export default function DashboardPage() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-10">
         <StatCard label="Active Markets"   value={isLoading ? '…' : String(activeMarkets)}        sub={browseMarkets.length < count ? `${browseMarkets.length} shown · ${count} on-chain` : `${count} total`} icon={Layers} />
         <StatCard label="Total Collateral" value={isLoading ? '…' : formatWad(totalCollateral, 2)} sub="WAD (vault shares)"                         icon={TrendingUp} />
-        <StatCard label="Total Borrows"    value={isLoading ? '…' : formatWad(totalDebt, 2)}       sub="WAD (debt tokens)"                         icon={DollarSign} />
+        <StatCard
+          label="Total Borrows"
+          value={isLoading ? '…' : formatWadCompact(totalDebt, 2)}
+          valueTitle={isLoading ? undefined : formatWad(totalDebt, 2)}
+          sub="WAD (debt tokens)"
+          icon={DollarSign}
+        />
         <StatCard label="Protocol"         value={paused ? 'Paused' : 'Active'}                    sub={emergencyShutdown ? 'Emergency shutdown' : 'All systems go'} icon={Activity} />
       </div>
 

@@ -1,31 +1,47 @@
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
-import { LayoutDashboard, BarChart3, Wallet, Zap, Shield, ShieldCheck, Vote, ArrowDownUp, Menu, X, Gift } from 'lucide-react';
-import { useState } from 'react';
 import ThemeToggle from '../../theme/ThemeToggle';
+import NetworkSwitcher from './NetworkSwitcher';
 
 const NAV_LINKS = [
-  { to: '/dashboard',   label: 'Dashboard',   Icon: LayoutDashboard },
-  { to: '/markets',     label: 'Markets',     Icon: BarChart3 },
-  { to: '/position',    label: 'Position',    Icon: Wallet },
-  { to: '/swap',        label: 'Swap',        Icon: ArrowDownUp },
-  { to: '/rewards',     label: 'Rewards',     Icon: Gift },
-  { to: '/governance',  label: 'Governance',  Icon: Vote },
-  { to: '/liquidate',   label: 'Liquidate',   Icon: Zap },
-  { to: '/security',    label: 'Security',    Icon: Shield },
-  { to: '/admin',       label: 'Admin',       Icon: ShieldCheck },
+  { to: '/dashboard', label: 'Dashboard' },
+  { to: '/markets', label: 'Markets' },
+  { to: '/position', label: 'Position' },
+  { to: '/swap', label: 'Swap' },
+  { to: '/rewards', label: 'Rewards' },
+  { to: '/governance', label: 'Governance' },
+  { to: '/liquidate', label: 'Liquidate' },
+  { to: '/security', label: 'Security' },
+  { to: '/admin', label: 'Admin' },
 ];
 
+const COMPACT_NAV_OPTIONS = [
+  { to: '/', label: 'Home' },
+  ...NAV_LINKS,
+  { to: '/lightpaper', label: 'Lightpaper' },
+];
+
+function isRouteActive(pathname: string, route: string): boolean {
+  if (route === '/') return pathname === '/';
+  return pathname === route || pathname.startsWith(`${route}/`);
+}
+
+function selectedCompactRoute(pathname: string): string {
+  const matched = COMPACT_NAV_OPTIONS.find(({ to }) => isRouteActive(pathname, to));
+  return matched?.to ?? '/dashboard';
+}
+
 export default function Navbar() {
-  const [mobileOpen, setMobileOpen] = useState(false);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const compactRoute = selectedCompactRoute(location.pathname);
 
   return (
     <header
-      className="app-header sticky top-0 z-50 border-b border-ceitnot-border text-ceitnot-ink"
+      className="app-header sticky top-0 z-50 border-b border-ceitnot-border text-ceitnot-ink overflow-x-hidden"
       style={{ boxShadow: 'var(--ceitnot-shadow-nav)' }}
     >
-      <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-16">
-        {/* Logo */}
+      <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 min-w-0 flex flex-wrap items-center justify-between gap-2 sm:gap-3 py-2 sm:h-16">
         <NavLink to="/" className="flex items-center gap-2 shrink-0" end>
           <span className="text-xl font-bold text-ceitnot-ink">
             <span className="text-ceitnot-gold">⬡</span>
@@ -36,74 +52,65 @@ export default function Navbar() {
           </span>
         </NavLink>
 
-        {/* Desktop nav */}
-        <div className="hidden md:flex items-center gap-1">
-          {NAV_LINKS.map(({ to, label }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={to === '/dashboard'}
-                className={({ isActive }) =>
-                `px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
-                  isActive
-                    ? 'bg-ceitnot-gold/12 text-ceitnot-gold'
-                    : 'text-ceitnot-ink/80 hover:text-ceitnot-ink hover:bg-ceitnot-surface-2/80'
-                }`
-              }
-            >
-              {label}
-            </NavLink>
-          ))}
-          <NavLink
-            to="/dashboard"
-            className="ml-2 px-4 py-2 rounded-xl text-sm font-semibold bg-ceitnot-gold text-ceitnot-on-primary hover:bg-ceitnot-gold-bright transition-colors"
-            style={{ boxShadow: 'var(--ceitnot-shadow-primary)' }}
-          >
-            Open App
-          </NavLink>
-        </div>
-
-        {/* Wallet button + mobile toggle */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0 min-w-0">
+          <NetworkSwitcher showLabel={false} className="shrink-0" selectClassName="w-24 sm:w-28" />
           <ThemeToggle />
           <ConnectButton
+            label="Connect"
             accountStatus="avatar"
             chainStatus="icon"
             showBalance={false}
           />
-          <button
-            className="md:hidden btn-ghost p-2"
-            onClick={() => setMobileOpen(v => !v)}
-            aria-label="Toggle menu"
-          >
-            {mobileOpen ? <X size={20} /> : <Menu size={20} />}
-          </button>
         </div>
       </nav>
 
-      {/* Mobile menu */}
-      {mobileOpen && (
-        <div className="md:hidden border-t border-ceitnot-border bg-ceitnot-surface/95 backdrop-blur-md">
-          {NAV_LINKS.map(({ to, label, Icon }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={to === '/dashboard'}
-              onClick={() => setMobileOpen(false)}
+      <div className="border-t border-ceitnot-border/70 bg-ceitnot-surface/70 backdrop-blur-md">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="xl:hidden py-2">
+            <label className="flex items-center gap-2 text-xs text-ceitnot-muted">
+              <span className="whitespace-nowrap">Page</span>
+              <select
+                value={compactRoute}
+                onChange={(e) => navigate(e.target.value)}
+                className="network-switcher-select w-full rounded-lg border border-ceitnot-border bg-ceitnot-surface px-3 py-1.5 text-sm text-ceitnot-ink outline-none"
+                title="Navigate between app pages"
+              >
+                {COMPACT_NAV_OPTIONS.map((opt) => (
+                  <option key={opt.to} value={opt.to}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <div className="hidden xl:flex items-center justify-center gap-1 py-2 flex-wrap">
+            {NAV_LINKS.map(({ to, label }) => (
+              <NavLink
+                key={to}
+                to={to}
+                end={to === '/dashboard'}
                 className={({ isActive }) =>
-                `flex items-center gap-3 px-6 py-3 text-sm font-medium transition-colors ${
-                  isActive
-                    ? 'text-ceitnot-gold bg-ceitnot-gold/10'
-                    : 'text-ceitnot-ink/85 hover:text-ceitnot-ink'
-                }`
-              }
+                  `px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${
+                    isActive
+                      ? 'bg-ceitnot-gold/12 text-ceitnot-gold'
+                      : 'text-ceitnot-ink/80 hover:text-ceitnot-ink hover:bg-ceitnot-surface-2/80'
+                  }`
+                }
+              >
+                {label}
+              </NavLink>
+            ))}
+            <NavLink
+              to="/dashboard"
+              className="ml-2 px-4 py-2 rounded-xl text-sm font-semibold bg-ceitnot-gold text-ceitnot-on-primary hover:bg-ceitnot-gold-bright transition-colors"
+              style={{ boxShadow: 'var(--ceitnot-shadow-primary)' }}
             >
-              <Icon size={16} />
-              {label}
+              Open App
             </NavLink>
-          ))}
+          </div>
         </div>
-      )}
+      </div>
     </header>
   );
 }

@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContracts } from 'wagmi';
-import { parseUnits, formatUnits, type Hash, type Address } from 'viem';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContracts, usePublicClient } from 'wagmi';
+import { parseUnits, formatUnits, encodeFunctionData, type Hash, type Address } from 'viem';
 import { X, ArrowRight, CheckCircle, AlertCircle, Loader2, Coins } from 'lucide-react';
 import { erc20Abi, erc4626Abi } from '../../abi/ceitnotEngine';
 import { gasFor, gasForTokenApprove, TARGET_CHAIN_ID } from '../../lib/contracts';
+import { contractAddress } from '../../lib/chainEnv';
 
 /** Lido bridged wstETH on Arbitrum One — Rabby/MetaMask «WSTETH» in the wallet. */
 const WSTETH_LIDO_ARB = '0x5979D7b546E38E414F7E9822514be443A4800529' as Address;
@@ -18,6 +19,7 @@ type Props = {
 
 export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress, marketId }: Props) {
   const { address, chainId, isConnected } = useAccount();
+  const publicClient = usePublicClient({ chainId: TARGET_CHAIN_ID });
   const chainMismatch = isConnected && chainId != null && chainId !== TARGET_CHAIN_ID;
   const [amount, setAmount] = useState('');
   const [hash, setHash] = useState<Hash | undefined>();
@@ -67,31 +69,59 @@ export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress
   })();
   const needsApproval = amountRaw > 0n && allowance < amountRaw;
 
+  const [mintCallableByUser, setMintCallableByUser] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+
+    async function probeMint() {
+      if (!assetAddress || !address || !publicClient) {
+        if (!cancelled) setMintCallableByUser(false);
+        return;
+      }
+      try {
+        await publicClient.call({
+          account: address,
+          to: assetAddress,
+          data: encodeFunctionData({
+            abi: erc20Abi,
+            functionName: 'mint',
+            args: [address, 0n],
+          }),
+        });
+        if (!cancelled) setMintCallableByUser(true);
+      } catch {
+        if (!cancelled) setMintCallableByUser(false);
+      }
+    }
+
+    void probeMint();
+    return () => { cancelled = true; };
+  }, [assetAddress, address, publicClient]);
+
   /**
-   * Показывать «наминть тестовые токены» только когда адрес актива явно указан как mock в env
-   * и совпадает с vault.underlying (Sepolia/Mainnet одинаково — без blanket true для тестсетей).
-   * Локальные чейны — для Anvil/mock-деплоя удобно оставить mint всегда.
-   * Canonical Lido wstETH на Arbitrum One никогда не считается mock.
+   * Показывать «наминть тестовые токены» для:
+   * - локальных чейнов (always true для удобства Anvil/mock),
+   * - активов, где пользователь реально может вызвать mint(address,uint256),
+   * - активов, явно помеченных как mock через env/address-book (MOCK_WSTETH / MOCK_DAI),
+   * - но никогда для canonical Lido wstETH на Arbitrum One.
    */
   const showMockMint = (() => {
     if (!assetAddress) return false;
     const assetLc = assetAddress.toLowerCase();
     if (TARGET_CHAIN_ID === 31337 || TARGET_CHAIN_ID === 1337) return true;
-
-    const mockEnv = (
-      (import.meta.env.VITE_MOCK_WSTETH_ADDRESS as string | undefined) ||
-      (import.meta.env.VITE_MOCK_WSTETH as string | undefined)
-    )
-      ?.toLowerCase()
-      .trim();
+    const mockWstEth = contractAddress('MOCK_WSTETH')?.toLowerCase().trim();
+    const mockDai = contractAddress('MOCK_DAI')?.toLowerCase().trim();
+    const explicitMockAddress =
+      (!!mockWstEth && assetLc === mockWstEth) ||
+      (!!mockDai && assetLc === mockDai);
 
     if (TARGET_CHAIN_ID === 42161) {
       const canonicalWstEth = '0x5979d7b546e38e414f7e9822514be443a4800529';
       if (assetLc === canonicalWstEth) return false;
-      return !!mockEnv && assetLc === mockEnv;
+      return mintCallableByUser || explicitMockAddress;
     }
 
-    return !!mockEnv && assetLc === mockEnv;
+    return mintCallableByUser || explicitMockAddress;
   })();
 
   const loadedAssetSymbol = (tokenData?.[2]?.result as string | undefined) ?? undefined;
@@ -150,6 +180,44 @@ export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress
   const setMax = () => {
     if (assetBalance > 0n) setAmount(formatUnits(assetBalance, assetDecimals));
   };
+  const isFeeCapTooLowError = (message: string) => {
+    const msg = message.toLowerCase();
+    return (
+      msg.includes('max fee per gas less than block base fee')
+      || (msg.includes('maxfeepergas') && msg.includes('base fee'))
+      || (msg.includes('max fee per gas') && msg.includes('base fee'))
+    );
+  };
+  const feeOverridesForBaseFeeRetry = async (baseFeeMultiplier = 2n) => {
+    if (!publicClient) return undefined;
+    try {
+      const pending = await publicClient.getBlock({ blockTag: 'pending' });
+      const baseFee = pending.baseFeePerGas;
+      if (baseFee == null) return undefined;
+      const maxPriorityFeePerGas = baseFee / 10n + 1_000_000n;
+      const maxFeePerGas = baseFee * baseFeeMultiplier + maxPriorityFeePerGas;
+      return { maxFeePerGas, maxPriorityFeePerGas } as const;
+    } catch {
+      return undefined;
+    }
+  };
+  const writeWithBaseFeeRetry = async (
+    request: Parameters<typeof writeContractAsync>[0],
+  ) => {
+    const initialFee = await feeOverridesForBaseFeeRetry(2n);
+    const firstRequest = (initialFee
+      ? { ...request, ...initialFee }
+      : request) as Parameters<typeof writeContractAsync>[0];
+    try {
+      return await writeContractAsync(firstRequest);
+    } catch (writeError: unknown) {
+      const msg = writeError instanceof Error ? writeError.message : String(writeError);
+      if (!isFeeCapTooLowError(msg)) throw writeError;
+      const feeRetry = await feeOverridesForBaseFeeRetry(3n);
+      if (!feeRetry) throw writeError;
+      return await writeContractAsync({ ...request, ...feeRetry } as Parameters<typeof writeContractAsync>[0]);
+    }
+  };
 
   async function submit() {
     if (!address || !assetAddress) return;
@@ -175,7 +243,7 @@ export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress
         setApprovalHint('');
         const approveGas = gasForTokenApprove(chainId);
         try {
-          const h = await writeContractAsync({
+          const h = await writeWithBaseFeeRetry({
             address: assetAddress,
             abi: erc20Abi,
             functionName: 'approve',
@@ -191,7 +259,7 @@ export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress
           if (!looksLikeTokenRevert || allowance === 0n) throw primaryApproveError;
 
           // Fallback for non-standard ERC-20 (e.g. tokens that require allowance reset to 0 first).
-          const resetHash = await writeContractAsync({
+          const resetHash = await writeWithBaseFeeRetry({
             address: assetAddress,
             abi: erc20Abi,
             functionName: 'approve',
@@ -207,7 +275,7 @@ export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress
 
       // Step 2: deposit into vault
       setStep('depositing');
-      const h = await writeContractAsync({
+      const h = await writeWithBaseFeeRetry({
         address: vaultAddress,
         abi: erc4626Abi,
         functionName: 'deposit',
@@ -219,7 +287,11 @@ export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress
     } catch (e: unknown) {
       setStep('error');
       const msg = e instanceof Error ? e.message : String(e);
-      setErrMsg(msg.split('\n')[0].slice(0, 120));
+      if (isFeeCapTooLowError(msg)) {
+        setErrMsg('Wallet/RPC rejected fee params (max fee below base fee). Retry and accept updated fee in wallet.');
+      } else {
+        setErrMsg(msg.split('\n')[0].slice(0, 120));
+      }
     }
   }
 
@@ -391,8 +463,8 @@ export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress
             {showMockMint && assetAddress && address && (
               <div className="mb-5 p-3 bg-ceitnot-gold/10 border border-ceitnot-gold/20 rounded-xl">
                 <p className="text-xs text-ceitnot-muted mb-2">
-                  Для этого рынка используется тестовый {assetSymbol} (mock). Нажмите ниже,
-                  чтобы наминтить себе токены (контракт MockERC20 разрешает это любому адресу).
+                  This market uses a test {assetSymbol} (mock). Click below to mint test tokens
+                  to your wallet (the MockERC20 contract allows any address to mint).
                 </p>
                 <button
                   type="button"
@@ -401,7 +473,7 @@ export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress
                     if (!address || !assetAddress) return;
                     try {
                       if (chainId !== TARGET_CHAIN_ID) return;
-                      const h = await writeContractAsync({
+                      const h = await writeWithBaseFeeRetry({
                         address: assetAddress,
                         abi: erc20Abi,
                         functionName: 'mint',
@@ -410,14 +482,20 @@ export default function MintSharesModal({ open, onClose, onSuccess, vaultAddress
                         ...gasFor(chainId),
                       });
                       setMintTxHash(h);
+                      setMintError('');
                     } catch (e) {
-                      setMintError(e instanceof Error ? e.message : String(e));
+                      const msg = e instanceof Error ? e.message : String(e);
+                      if (isFeeCapTooLowError(msg)) {
+                        setMintError('RPC rejected tx fee params (max fee below base fee). Retry and accept updated fee in wallet.');
+                      } else {
+                        setMintError(msg);
+                      }
                     }
                   }}
                   className="w-full py-2 rounded-xl text-sm font-medium bg-ceitnot-gold/20 text-ceitnot-gold hover:bg-ceitnot-gold/30 transition-colors flex items-center justify-center gap-2"
                 >
                   {(mintTxHash && !mintConfirmed) && <Loader2 size={14} className="animate-spin" />}
-                  {mintTxHash && !mintConfirmed ? 'Ожидание подтверждения…' : `Получить 100 ${assetSymbol}`}
+                  {mintTxHash && !mintConfirmed ? 'Waiting for confirmation…' : `Get 100 ${assetSymbol}`}
                 </button>
                 {mintError && <p className="text-xs text-ceitnot-danger mt-2">{mintError}</p>}
               </div>

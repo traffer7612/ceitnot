@@ -39,12 +39,14 @@ contract CeitnotPSM {
     error PSM__InsufficientReserves();
     error PSM__InsufficientMinted();
     error PSM__TransferFailed();
+    error PSM__ExceedsSwapLimit();
 
     // ------------------------------- Events
     event SwapIn(address indexed user, uint256 stableIn, uint256 ausdOut, uint256 fee);
     event SwapOut(address indexed user, uint256 ausdIn, uint256 stableOut, uint256 fee);
     event CeilingSet(uint256 ceiling);
     event FeeSet(uint16 tinBps, uint16 toutBps);
+    event SwapLimitsSet(uint256 maxSwapInPeg, uint256 maxSwapOutAusd);
     event FeeReservesWithdrawn(address indexed to, uint256 amount);
     /// @notice Pegged liquidity withdrawn (not from `feeReserves`); reduces swapOut capacity until refilled.
     event LiquidityWithdrawn(address indexed to, uint256 amount);
@@ -77,6 +79,11 @@ contract CeitnotPSM {
 
     /// @notice Accumulated fees expressed in `peggedToken`. Excludes main reserves.
     uint256 public feeReserves;
+
+    /// @notice Max `peggedToken` per `swapIn` (native peg decimals). 0 = unlimited.
+    uint256 public maxSwapInPeg;
+    /// @notice Max ceitUSD per `swapOut` (18 decimals). 0 = unlimited.
+    uint256 public maxSwapOutAusd;
 
     // ------------------------------- Constructor
     constructor(
@@ -114,6 +121,7 @@ contract CeitnotPSM {
      */
     function swapIn(uint256 amount) external returns (uint256 ausdOut) {
         if (amount == 0) revert PSM__ZeroAmount();
+        if (maxSwapInPeg != 0 && amount > maxSwapInPeg) revert PSM__ExceedsSwapLimit();
 
         uint256 feePeg = (amount * tinBps) / 10_000;
         uint256 netPeg = amount - feePeg;
@@ -144,6 +152,7 @@ contract CeitnotPSM {
      */
     function swapOut(uint256 amount) external returns (uint256 stableOut) {
         if (amount == 0) revert PSM__ZeroAmount();
+        if (maxSwapOutAusd != 0 && amount > maxSwapOutAusd) revert PSM__ExceedsSwapLimit();
 
         uint256 feeAusd = (amount * toutBps) / 10_000;
         uint256 netAusd = amount - feeAusd;
@@ -180,6 +189,17 @@ contract CeitnotPSM {
         tinBps  = tinBps_;
         toutBps = toutBps_;
         emit FeeSet(tinBps_, toutBps_);
+    }
+
+    /**
+     * @notice Per-transaction swap caps for soft launch (0 = unlimited).
+     * @param maxSwapInPeg_  Max pegged token per `swapIn` (e.g. 100e6 = 100 USDC on Arbitrum).
+     * @param maxSwapOutAusd_ Max ceitUSD burned per `swapOut` (18 decimals).
+     */
+    function setSwapLimits(uint256 maxSwapInPeg_, uint256 maxSwapOutAusd_) external onlyAdmin {
+        maxSwapInPeg    = maxSwapInPeg_;
+        maxSwapOutAusd  = maxSwapOutAusd_;
+        emit SwapLimitsSet(maxSwapInPeg_, maxSwapOutAusd_);
     }
 
     /**

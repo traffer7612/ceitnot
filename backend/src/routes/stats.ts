@@ -25,10 +25,87 @@ const ENGINE_USER_EVENTS = [
 const USER_COUNT_CHUNK_BLOCKS = 50_000n;
 const USER_COUNT_CHUNK_CONCURRENCY = 8;
 const USER_COUNT_CACHE_MS = 900_000;
+const GALXE_STATS_TIMEOUT_MS = 10_000;
+const GALXE_STATS_CACHE_MS = 120_000;
+const GALXE_DEFAULT_ENDPOINT = "https://graphigo-business.prd.galaxy.eco/query";
+const GALXE_MAX_WALLETS = 25;
 
 type UserCountCache = { count: number; expires: number };
 const userCountCache = new Map<string, UserCountCache>();
 const userCountInFlight = new Map<string, Promise<number>>();
+
+type GalxeWalletSample = {
+  address: string;
+  username: string | null;
+  rank: number | null;
+  points: number | null;
+};
+
+type GalxeStatsPayload = {
+  configured: boolean;
+  available: boolean;
+  spaceId: number | null;
+  spaceName: string | null;
+  participantsCount: number | null;
+  sampleUniqueWallets: number | null;
+  samplePointsTotal: number | null;
+  wallets: GalxeWalletSample[];
+};
+
+type GalxeStatsCache = { value: GalxeStatsPayload; expires: number };
+const galxeStatsCache = new Map<string, GalxeStatsCache>();
+const galxeStatsInFlight = new Map<string, Promise<GalxeStatsPayload>>();
+
+type GalxeConfig = {
+  endpoint: string;
+  accessToken: string | null;
+  spaceId: number;
+  sprintId: number | null;
+  walletsLimit: number;
+};
+
+type GalxeLeaderboardRow = {
+  rank?: unknown;
+  points?: unknown;
+  address?: {
+    username?: unknown;
+    address?: unknown;
+  } | null;
+};
+
+type GalxeGraphqlResponse = {
+  data?: {
+    space?: {
+      id?: unknown;
+      name?: unknown;
+      loyaltyPointsRanks?: {
+        totalCount?: unknown;
+        list?: unknown;
+      } | null;
+    } | null;
+  };
+  errors?: Array<{ message?: string }>;
+};
+
+const GALXE_LEADERBOARD_QUERY = `
+query OzGalxeLeaderboard($spaceId: Int!, $cursorAfter: String, $sprintId: Int) {
+  space(id: $spaceId) {
+    id
+    name
+    loyaltyPointsRanks(cursorAfter: $cursorAfter, sprintId: $sprintId) {
+      totalCount
+      list {
+        rank
+        points
+        address {
+          username
+          address
+        }
+      }
+    }
+  }
+}
+`;
 
 /** Canonical CeitnotProxy on Arbitrum One — creation block from deployment tx (see docs/PRODUCTION-ADDRESSES-ARBITRUM.md). */
 const ARBITRUM_ONE_ENGINE_PROXY_LOWER =
@@ -120,6 +197,156 @@ function refreshUniqueUsersInBackground(
       userCountInFlight.delete(cacheKey);
     });
   userCountInFlight.set(cacheKey, pending);
+}
+
+function parseOptionalInt(raw: string | undefined): number | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (trimmed === "") return null;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n)) return null;
+  const asInt = Math.trunc(n);
+  return asInt >= 0 ? asInt : null;
+}
+function parseFiniteNumber(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw)) return raw;
+  if (typeof raw === "string" && raw.trim() !== "") {
+    const n = Number(raw.trim());
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+function parseGalxeAddress(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const v = raw.trim();
+  if (!v || !v.startsWith("0x")) return null;
+  try {
+    return getAddress(v as `0x${string}`);
+  } catch {
+    return v.toLowerCase();
+  }
+}
+function emptyGalxeStats(configured: boolean, spaceId: number | null): GalxeStatsPayload {
+  return {
+    configured,
+    available: false,
+    spaceId,
+    spaceName: null,
+    participantsCount: null,
+    sampleUniqueWallets: null,
+    samplePointsTotal: null,
+    wallets: [],
+  };
+}
+function galxeConfigFromEnv(): GalxeConfig | null {
+  const spaceId = parseOptionalInt(process.env.GALXE_SPACE_ID);
+  if (spaceId === null || spaceId <= 0) return null;
+  const endpoint =
+    process.env.GALXE_GRAPHQL_ENDPOINT?.trim().replace(/\/+$/, "") || GALXE_DEFAULT_ENDPOINT;
+  if (!endpoint) return null;
+  const accessToken = process.env.GALXE_ACCESS_TOKEN?.trim() || null;
+  const sprintId = parseOptionalInt(process.env.GALXE_SPRINT_ID);
+  const envLimit = parseOptionalInt(process.env.GALXE_WALLETS_LIMIT);
+  const walletsLimit = Math.min(Math.max(envLimit ?? 8, 1), GALXE_MAX_WALLETS);
+  return { endpoint, accessToken, spaceId, sprintId, walletsLimit };
+}
+function galxeCacheKey(config: GalxeConfig): string {
+  return [
+    config.endpoint,
+    config.spaceId,
+    config.sprintId ?? "all",
+    config.walletsLimit,
+    config.accessToken ? "auth" : "public",
+  ].join("|");
+}
+async function fetchGalxeStats(config: GalxeConfig): Promise<GalxeStatsPayload> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (config.accessToken) {
+    headers["access-token"] = config.accessToken;
+  }
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), GALXE_STATS_TIMEOUT_MS);
+  try {
+    const response = await fetch(config.endpoint, {
+      method: "POST",
+      headers,
+      signal: controller.signal,
+      body: JSON.stringify({
+        query: GALXE_LEADERBOARD_QUERY,
+        variables: {
+          spaceId: config.spaceId,
+          cursorAfter: null,
+          sprintId: config.sprintId,
+        },
+      }),
+    });
+    if (!response.ok) return emptyGalxeStats(true, config.spaceId);
+    const payload = (await response.json()) as GalxeGraphqlResponse;
+    if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+      return emptyGalxeStats(true, config.spaceId);
+    }
+    const space = payload.data?.space;
+    const ranks = space?.loyaltyPointsRanks;
+    const rawList = ranks?.list;
+    if (!Array.isArray(rawList)) {
+      return {
+        ...emptyGalxeStats(true, config.spaceId),
+        spaceName: typeof space?.name === "string" && space.name.trim() !== "" ? space.name : null,
+        participantsCount: parseFiniteNumber(ranks?.totalCount),
+      };
+    }
+    const parsedWallets: GalxeWalletSample[] = [];
+    for (const raw of rawList) {
+      if (!raw || typeof raw !== "object") continue;
+      const row = raw as GalxeLeaderboardRow;
+      const walletAddress = parseGalxeAddress(row.address?.address);
+      if (!walletAddress) continue;
+      const usernameRaw = row.address?.username;
+      parsedWallets.push({
+        address: walletAddress,
+        username: typeof usernameRaw === "string" && usernameRaw.trim() !== "" ? usernameRaw : null,
+        rank: parseFiniteNumber(row.rank),
+        points: parseFiniteNumber(row.points),
+      });
+      if (parsedWallets.length >= config.walletsLimit) break;
+    }
+    const uniqueInSample = new Set(parsedWallets.map((w) => w.address.toLowerCase())).size;
+    const pointsInSample = parsedWallets.reduce((acc, w) => acc + (w.points ?? 0), 0);
+    return {
+      configured: true,
+      available: true,
+      spaceId: config.spaceId,
+      spaceName: typeof space?.name === "string" && space.name.trim() !== "" ? space.name : null,
+      participantsCount: parseFiniteNumber(ranks?.totalCount),
+      sampleUniqueWallets: uniqueInSample,
+      samplePointsTotal: pointsInSample,
+      wallets: parsedWallets,
+    };
+  } catch {
+    return emptyGalxeStats(true, config.spaceId);
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+async function getGalxeStatsCached(): Promise<GalxeStatsPayload> {
+  const config = galxeConfigFromEnv();
+  if (!config) return emptyGalxeStats(false, null);
+  const key = galxeCacheKey(config);
+  const now = Date.now();
+  const hit = galxeStatsCache.get(key);
+  if (hit && hit.expires > now) return hit.value;
+  const inFlight = galxeStatsInFlight.get(key);
+  if (inFlight) return inFlight;
+  const pending = fetchGalxeStats(config)
+    .then((value) => {
+      galxeStatsCache.set(key, { value, expires: Date.now() + GALXE_STATS_CACHE_MS });
+      return value;
+    })
+    .finally(() => {
+      galxeStatsInFlight.delete(key);
+    });
+  galxeStatsInFlight.set(key, pending);
+  return pending;
 }
 
 const arbitrumSepolia = defineChain({
@@ -232,9 +459,28 @@ const chains: Record<number, Chain> = {
   421614: arbitrumSepolia,
   8453: base,
 };
+function emptyStatsResponse(galxe: GalxeStatsPayload): {
+  totalDebt: string;
+  totalCollateralAssets: string;
+  uniqueUsers: null;
+  galxe: GalxeStatsPayload;
+} {
+  return {
+    totalDebt: "0",
+    totalCollateralAssets: "0",
+    uniqueUsers: null,
+    galxe,
+  };
+}
 
 statsRouter.get("/:chainId", async (req, res) => {
   const chainId = Number(req.params.chainId);
+  let galxe: GalxeStatsPayload;
+  try {
+    galxe = await getGalxeStatsCached();
+  } catch {
+    galxe = emptyGalxeStats(false, null);
+  }
   const rawEngineAddress = process.env.CEITNOT_ENGINE_ADDRESS?.trim();
   const engineAddress =
     rawEngineAddress && rawEngineAddress.length > 0
@@ -247,16 +493,16 @@ statsRouter.get("/:chainId", async (req, res) => {
         })()
       : undefined;
   if (!engineAddress) {
-    return res.json({ totalDebt: "0", totalCollateralAssets: "0", uniqueUsers: null });
+    return res.json(emptyStatsResponse(galxe));
   }
   const chain = chains[chainId];
   if (!chain) {
-    return res.json({ totalDebt: "0", totalCollateralAssets: "0", uniqueUsers: null });
+    return res.json(emptyStatsResponse(galxe));
   }
   try {
     const rpc = getRpc(chainId);
     if (!rpc) {
-      return res.json({ totalDebt: "0", totalCollateralAssets: "0", uniqueUsers: null });
+      return res.json(emptyStatsResponse(galxe));
     }
     const client = createPublicClient({
       chain,
@@ -294,8 +540,9 @@ statsRouter.get("/:chainId", async (req, res) => {
       totalDebt: totalDebtStr,
       totalCollateralAssets: totalCollateralStr,
       uniqueUsers,
+      galxe,
     });
   } catch (_e) {
-    return res.json({ totalDebt: "0", totalCollateralAssets: "0", uniqueUsers: null });
+    return res.json(emptyStatsResponse(galxe));
   }
 });

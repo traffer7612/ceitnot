@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ceitnot — симулятор параметров рынка</title>
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --border: #2d3348;
+      --text: #e8eaef;
+      --muted: #9aa3b5;
+      --accent: #6b9fff;
+      --warn: #e8b84a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 24px;
+      line-height: 1.5;
+    }
+    h1 { font-size: 1.35rem; margin: 0 0 8px; }
+    .sub { color: var(--muted); font-size: 0.9rem; margin-bottom: 20px; }
+    .grid { display: grid; gap: 16px; }
+    @media (min-width: 900px) { .grid-2 { grid-template-columns: 1fr 1fr; } }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 18px;
+    }
+    .card h2 { font-size: 1rem; margin: 0 0 12px; }
+    label {
+      display: block;
+      margin-bottom: 14px;
+      font-size: 0.85rem;
+    }
+    label span { color: var(--muted); }
+    input[type="range"] { width: 100%; margin-top: 4px; accent-color: var(--accent); }
+    .presets { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+    button {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    button:hover { border-color: var(--accent); }
+    button.active { background: #243049; border-color: var(--accent); }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin: 12px 0;
+    }
+    .stat {
+      background: var(--bg);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .stat .v { font-size: 1.25rem; font-weight: 600; color: var(--accent); }
+    .stat .l { font-size: 0.75rem; color: var(--muted); }
+    canvas { width: 100%; height: 220px; background: var(--bg); border-radius: 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 500; }
+    code { font-size: 0.78rem; word-break: break-all; }
+    .warn {
+      background: #2a2418;
+      border: 1px solid #5c4a20;
+      color: var(--warn);
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      margin: 10px 0;
+      display: none;
+    }
+    .warn.show { display: block; }
+    .checklist { font-size: 0.85rem; }
+    .checklist dt { color: var(--muted); margin-top: 10px; }
+    .checklist dd { margin: 4px 0 0; }
+  </style>
+</head>
+<body>
+  <h1>Ceitnot — параметры рынка и IRM</h1>
+  <p class="sub">
+    Формулы как в <code>InterestRateModel.sol</code> · utilization = totalDebt / borrowCap · ставка в RAY/сек → APR %
+  </p>
+
+  <div class="grid grid-2">
+    <div class="card">
+      <h2>Пресеты</h2>
+      <div class="presets" id="presetBtns"></div>
+      <table id="presetTable">
+        <thead>
+          <tr><th>Рынок</th><th>LTV</th><th>Liq</th><th>Kink</th><th>Reserve</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>Симуляция borrow APR</h2>
+      <div id="sliders"></div>
+      <div class="stats">
+        <div class="stat"><div class="v" id="statUtil">—</div><div class="l">Utilization</div></div>
+        <div class="stat"><div class="v" id="statApr">—</div><div class="l">Borrow APR сейчас</div></div>
+        <div class="stat"><div class="v" id="statRf">—</div><div class="l">Доля протокола</div></div>
+      </div>
+      <div class="warn" id="warnCap">borrowCap = 0 → utilization всегда 0, работает только baseRate</div>
+      <canvas id="chart" width="800" height="220"></canvas>
+      <p class="sub" style="margin:8px 0 0">Ось X: utilization % · Источник: getBorrowRate</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2>Значения для updateMarketIrmParams (on-chain)</h2>
+    <table>
+      <thead><tr><th>Параметр</th><th>Значение</th><th>Примечание</th></tr></thead>
+      <tbody id="onchain"></tbody>
+    </table>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h2 id="checklistTitle">Чеклист рынка</h2>
+    <dl class="checklist" id="checklist"></dl>
+  </div>
+
+  <script>
+    const RAY = 1e27;
+    const SECONDS_PER_YEAR = 365.25 * 24 * 3600;
+    const BPS = 10000;
+
+    const PRESETS = [
+      {
+        id: "wsteth",
+        label: "wstETH",
+        add: { ltv: 8000, liq: 8500, pen: 500, borrowCap: "5_000_000e18", isolated: false },
+        irm: { base: 2, atKink: 8, at100: 62, kink: 80, rf: 1000 },
+        liq: { close: 5000, full: 7000, proto: 1000 },
+        fees: { yield: 1000, orig: 10 },
+        debtM: 2.5, capM: 5,
+      },
+      {
+        id: "stable",
+        label: "Стейбл",
+        add: { ltv: 8500, liq: 9000, pen: 400, borrowCap: "10_000_000e18", isolated: false },
+        irm: { base: 0, atKink: 4, at100: 44, kink: 80, rf: 1500 },
+        liq: { close: 5000, full: 9500, proto: 500 },
+        fees: { yield: 500, orig: 5 },
+        debtM: 6, capM: 10,
+      },
+      {
+        id: "isolated",
+        label: "Изолированный",
+        add: { ltv: 6500, liq: 7500, pen: 800, borrowCap: "500_000e18", isolated: true },
+        irm: { base: 5, atKink: 20, at100: 120, kink: 70, rf: 2000 },
+        liq: { close: 5000, full: 5000, proto: 2000 },
+        fees: { yield: 1500, orig: 25 },
+        debtM: 0.35, capM: 0.5,
+      },
+    ];
+
+    let state = {
+      preset: "wsteth",
+      baseApr: 2,
+      aprKink: 8,
+      apr100: 62,
+      kinkPct: 80,
+      rfBps: 1000,
+      capM: 5,
+      debtM: 2.5,
+    };
+
+    function aprPctToRayPerSec(aprPct) {
+      return (aprPct / 100) * (RAY / SECONDS_PER_YEAR);
+    }
+    function rayPerSecToAprPct(r) {
+      return (r / RAY) * SECONDS_PER_YEAR * 100;
+    }
+    function utilizationRay(borrows, cap) {
+      if (cap <= 0 || borrows <= 0) return 0;
+      const u = (borrows * RAY) / cap;
+      return u > RAY ? RAY : u;
+    }
+    function borrowRateRayPerSec(u, base, s1, s2, kink) {
+      if (u <= kink) return base + (u * s1) / RAY;
+      const normal = base + (kink * s1) / RAY;
+      return normal + ((u - kink) * s2) / RAY;
+    }
+    function slopesFromApr(baseApr, aprKink, apr100, kinkPct) {
+      const kink = (kinkPct / 100) * RAY;
+      const base = aprPctToRayPerSec(baseApr);
+      const rK = aprPctToRayPerSec(aprKink);
+      const r100 = aprPctToRayPerSec(apr100);
+      const s1 = kink > 0 ? ((rK - base) * RAY) / kink : 0;
+      const tail = RAY - kink;
+      const normal = base + (kink * s1) / RAY;
+      const s2 = tail > 0 ? ((r100 - normal) * RAY) / tail : 0;
+      return { base, s1, s2, kink };
+    }
+    function formatRay(n) {
+      if (n >= 1e24) return (n / 1e27).toExponential(3) + " (×1e27)";
+      return Math.round(n).toLocaleString("en-US");
+    }
+
+    const sliderDefs = [
+      { key: "baseApr", label: "Base APR", min: 0, max: 10, step: 0.5, suf: "%" },
+      { key: "aprKink", label: "APR при kink", min: 2, max: 25, step: 0.5, suf: "%" },
+      { key: "apr100", label: "APR при 100% util", min: 10, max: 150, step: 1, suf: "%" },
+      { key: "kinkPct", label: "Kink utilization", min: 50, max: 95, step: 5, suf: "%" },
+      { key: "rfBps", label: "Reserve factor", min: 0, max: 3000, step: 100, suf: " bps" },
+      { key: "capM", label: "borrowCap (M WAD)", min: 0.1, max: 20, step: 0.1, suf: "" },
+      { key: "debtM", label: "totalDebt (M WAD)", min: 0, max: 20, step: 0.1, suf: "" },
+    ];
+
+    function applyPreset(p) {
+      state.preset = p.id;
+      state.baseApr = p.irm.base;
+      state.aprKink = p.irm.atKink;
+      state.apr100 = p.irm.at100;
+      state.kinkPct = p.irm.kink;
+      state.rfBps = p.irm.rf;
+      state.capM = p.capM;
+      state.debtM = p.debtM;
+      document.querySelectorAll("#presetBtns button").forEach((b) => {
+        b.classList.toggle("active", b.dataset.id === p.id);
+      });
+      renderSliders();
+      update();
+    }
+
+    function renderSliders() {
+      const el = document.getElementById("sliders");
+      el.innerHTML = sliderDefs
+        .map(
+          (d) => `
+        <label>${d.label}: <strong id="val-${d.key}">${state[d.key]}</strong>${d.suf}
+          <input type="range" id="rng-${d.key}" min="${d.min}" max="${d.max}" step="${d.step}" value="${state[d.key]}" />
+        </label>`
+        )
+        .join("");
+      sliderDefs.forEach((d) => {
+        document.getElementById(`rng-${d.key}`).oninput = (e) => {
+          state[d.key] = parseFloat(e.target.value);
+          document.getElementById(`val-${d.key}`).textContent = state[d.key];
+          update();
+        };
+      });
+    }
+
+    function drawChart(points) {
+      const c = document.getElementById("chart");
+      const ctx = c.getContext("2d");
+      const w = c.width;
+      const h = c.height;
+      const pad = { l: 44, r: 12, t: 12, b: 28 };
+      ctx.clearRect(0, 0, w, h);
+      const maxY = Math.max(...points.map((p) => p.y), 5);
+      const plotW = w - pad.l - pad.r;
+      const plotH = h - pad.t - pad.b;
+
+      ctx.strokeStyle = "#2d3348";
+      ctx.fillStyle = "#9aa3b5";
+      ctx.font = "11px system-ui";
+      for (let i = 0; i <= 4; i++) {
+        const y = pad.t + (plotH * i) / 4;
+        ctx.beginPath();
+        ctx.moveTo(pad.l, y);
+        ctx.lineTo(w - pad.r, y);
+        ctx.stroke();
+        const v = maxY * (1 - i / 4);
+        ctx.fillText(v.toFixed(0) + "%", 4, y + 4);
+      }
+      for (let i = 0; i <= 5; i++) {
+        const x = pad.l + (plotW * i) / 5;
+        ctx.fillText((i * 20) + "%", x - 10, h - 6);
+      }
+
+      ctx.strokeStyle = "#6b9fff";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      points.forEach((p, i) => {
+        const x = pad.l + (p.x / 100) * plotW;
+        const y = pad.t + plotH * (1 - p.y / maxY);
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      const utilPct = (utilizationRay(state.debtM * 1e6 * 1e18, state.capM * 1e6 * 1e18) / RAY) * 100;
+      const { base, s1, s2, kink } = slopesFromApr(state.baseApr, state.aprKink, state.apr100, state.kinkPct);
+      const u = (utilPct / 100) * RAY;
+      const r = borrowRateRayPerSec(u, base, s1, s2, kink);
+      const apr = rayPerSecToAprPct(r);
+      const mx = pad.l + (utilPct / 100) * plotW;
+      const my = pad.t + plotH * (1 - apr / maxY);
+      ctx.fillStyle = "#e8b84a";
+      ctx.beginPath();
+      ctx.arc(mx, my, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function update() {
+      const { base, s1, s2, kink } = slopesFromApr(
+        state.baseApr,
+        state.aprKink,
+        state.apr100,
+        state.kinkPct
+      );
+      const cap = state.capM * 1e6 * 1e18;
+      const debt = state.debtM * 1e6 * 1e18;
+      const util = utilizationRay(debt, cap);
+      const utilPct = (util / RAY) * 100;
+      const rate = borrowRateRayPerSec(util, base, s1, s2, kink);
+      const apr = rayPerSecToAprPct(rate);
+
+      document.getElementById("statUtil").textContent = utilPct.toFixed(1) + "%";
+      document.getElementById("statApr").textContent = apr.toFixed(2) + "%";
+      document.getElementById("statRf").textContent = (state.rfBps / 100).toFixed(0) + "%";
+      document.getElementById("warnCap").classList.toggle("show", state.capM <= 0);
+
+      const pts = [];
+      for (let i = 0; i <= 100; i++) {
+        const u = (i / 100) * RAY;
+        pts.push({ x: i, y: rayPerSecToAprPct(borrowRateRayPerSec(u, base, s1, s2, kink)) });
+      }
+      drawChart(pts);
+
+      document.getElementById("onchain").innerHTML = `
+        <tr><td>baseRate</td><td><code>${formatRay(base)}</code></td><td>≈ ${state.baseApr}% APR</td></tr>
+        <tr><td>slope1</td><td><code>${formatRay(s1)}</code></td><td>до kink ${state.kinkPct}%</td></tr>
+        <tr><td>slope2</td><td><code>${formatRay(s2)}</code></td><td>после kink</td></tr>
+        <tr><td>kink</td><td><code>${formatRay(kink)}</code></td><td>${state.kinkPct}% × 1e27</td></tr>
+        <tr><td>reserveFactorBps</td><td><code>${state.rfBps}</code></td><td>${state.rfBps / 100}% в totalReserves</td></tr>
+      `;
+
+      const p = PRESETS.find((x) => x.id === state.preset) || PRESETS[0];
+      document.getElementById("checklistTitle").textContent = "Чеклист: " + p.label;
+      document.getElementById("checklist").innerHTML = `
+        <dt>addMarket</dt><dd>ltv=${p.add.ltv}, liq=${p.add.liq}, penalty=${p.add.pen}, borrowCap=${p.add.borrowCap}, isolated=${p.add.isolated}</dd>
+        <dt>updateMarketLiquidationParams</dt><dd>close=${p.liq.close}, full=${p.liq.full}, protoFee=${p.liq.proto} bps</dd>
+        <dt>updateMarketFeeParams</dt><dd>yield=${p.fees.yield}, origination=${p.fees.orig} bps</dd>
+        <dt>затем</dt><dd>activateMarket (после ненулевых closeFactor и fullLiquidationThreshold)</dd>
+      `;
+    }
+
+    const btnWrap = document.getElementById("presetBtns");
+    PRESETS.forEach((p) => {
+      const b = document.createElement("button");
+      b.textContent = p.label;
+      b.dataset.id = p.id;
+      b.onclick = () => applyPreset(p);
+      btnWrap.appendChild(b);
+    });
+
+    const tbody = document.querySelector("#presetTable tbody");
+    PRESETS.forEach((p) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${p.label}</td><td>${p.add.ltv / 100}%</td><td>${p.add.liq / 100}%</td><td>${p.irm.kink}%</td><td>${p.irm.rf / 100}%</td>`;
+      tbody.appendChild(tr);
+    });
+
+    applyPreset(PRESETS[0]);
+  </script>
+</body>
+</html>

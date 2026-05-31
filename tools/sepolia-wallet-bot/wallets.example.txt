@@ -1,0 +1,4 @@
+# One hex private key per line (with or without 0x). Lines starting with # are ignored.
+# Copy to wallets.txt and fund each address with Arbitrum Sepolia ETH from a faucet.
+# 0xYOUR_PRIVATE_KEY_1
+# 0xYOUR_PRIVATE_KEY_2

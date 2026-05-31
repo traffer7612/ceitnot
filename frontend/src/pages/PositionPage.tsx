@@ -4,7 +4,7 @@ import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { usePosition } from '../hooks/usePosition';
 import { useMarkets } from '../hooks/useMarkets';
 import { useAdmin } from '../hooks/useAdmin';
-import { formatWad, formatToken, formatHf, parseHf, hfColor, hfBarColor, hfBarPct, formatAddress } from '../lib/utils';
+import { formatToken, parseHf, hfColor, hfBarColor, hfBarPct, formatAddress } from '../lib/utils';
 import ActionModal, { type ActionType } from '../components/position/ActionModal';
 import MintSharesModal from '../components/position/MintSharesModal';
 import TestnetOracleRefreshBar from '../components/position/TestnetOracleRefreshBar';
@@ -17,7 +17,17 @@ export default function PositionPage() {
   const { address, isConnected } = useAccount();
   const { positions, healthFactor, refetch } = usePosition();
   const { markets, browseMarkets } = useMarkets();
-  const positionIds = new Set(positions.map(p => p.marketId));
+  const DUST_DISPLAY_WAD = 10n ** 14n; // 0.0001 (18 decimals)
+  const hasMeaningfulDebt = (v: bigint | undefined) => (v ?? 0n) > DUST_DISPLAY_WAD;
+  const sharesDustRaw = (decimals: number) => (decimals > 4 ? 10n ** BigInt(decimals - 4) : 1n);
+  const nonEmptyPositions = positions.filter((p) => {
+    const market = markets.find(m => m.id === p.marketId);
+    if (!market || !market.config.isActive || market.config.isIsolated) return false;
+    const shareDust = sharesDustRaw(market?.vaultDecimals ?? 18);
+    return p.shares > shareDust || p.value > DUST_DISPLAY_WAD || hasMeaningfulDebt(p.debt);
+  });
+  const marketById = new Map(markets.map(m => [m.id, m]));
+  const positionIds = new Set(nonEmptyPositions.map(p => p.marketId));
   const selectableMarkets = markets.filter(
     m => browseMarkets.some(b => b.id === m.id) || positionIds.has(m.id),
   );
@@ -26,9 +36,43 @@ export default function PositionPage() {
   const [mintModal, setMintModal] = useState<MintState>({ open: false });
   const [selectedMarketId, setSelectedMarketId] = useState<number | null>(null);
   const [selectorOpen, setSelectorOpen] = useState(false);
-
-  const hf    = parseHf(healthFactor);
+  const totalDebtRaw = positions.reduce((sum, p) => sum + p.debt, 0n);
+  const hasOnlyDustDebt = totalDebtRaw > 0n && totalDebtRaw <= DUST_DISPLAY_WAD;
+  const hf    = hasOnlyDustDebt ? Infinity : parseHf(healthFactor);
   const hfPct = hfBarPct(hf);
+  const hfLabel = isFinite(hf) ? hf.toFixed(2) : '∞';
+  const isZeroFormatted = (value: string) => /^0([.,]0+)?$/.test(value.replace(/\s/g, ''));
+  const formatWithDust = (v: bigint | undefined, decimals = 18, dp = 4) => {
+    if (v === undefined) return '—';
+    const shown = formatToken(v, decimals, dp);
+    if (v > 0n && isZeroFormatted(shown)) return '<0.0001';
+    return shown;
+  };
+  const formatDebtDisplay = (v: bigint | undefined) => {
+    if (v === undefined) return '—';
+    if (v <= DUST_DISPLAY_WAD) return '0';
+    return formatWithDust(v, 18, 4);
+  };
+  const marketLabel = (marketId: number) => {
+    const symbol = marketById.get(marketId)?.vaultSymbol;
+    return symbol ? `${symbol} (#${marketId})` : `Market #${marketId}`;
+  };
+  const isFrontendInactiveMarket = (marketId: number) =>
+    !!marketById.get(marketId)?.config.isIsolated;
+  const frontendInactiveReason = (marketId: number) =>
+    isFrontendInactiveMarket(marketId)
+      ? `Рынок ${marketLabel(marketId)} отключён на фронте (inactive).`
+      : undefined;
+  const isolationBlockReasonFor = (action: ActionType, targetMarketId: number): string | undefined => {
+    if (action !== 'deposit' && action !== 'borrow') return undefined;
+    const targetMarket = marketById.get(targetMarketId);
+    if (!targetMarket) return undefined;
+    if (targetMarket.config.isIsolated) {
+      return `Рынок ${marketLabel(targetMarketId)} помечен как inactive на фронте. Deposit/Borrow для изолированных рынков отключены.`;
+    }
+
+    return undefined;
+  };
 
   const openModal = (action: ActionType, marketId: number) =>
     setModal({ open: true, action, marketId });
@@ -106,7 +150,9 @@ export default function PositionPage() {
                 All Markets
               </button>
               {selectableMarkets.map(m => {
-                const hasPos = positions.some(p => p.marketId === m.id);
+                const hasPos = nonEmptyPositions.some(p => p.marketId === m.id);
+                const marketInactive =
+                  !m.config.isActive || isFrontendInactiveMarket(m.id);
                 return (
                   <button
                     key={m.id}
@@ -123,9 +169,10 @@ export default function PositionPage() {
                     </div>
                     <div className="flex items-center gap-2">
                       {hasPos && <span className="text-[10px] bg-ceitnot-gold/20 text-ceitnot-gold px-1.5 py-0.5 rounded">Has position</span>}
-                      {m.config.isActive
-                        ? <span className="badge-active text-[10px]">Active</span>
-                        : <span className="badge-inactive text-[10px]">Inactive</span>}
+                      {marketInactive
+                        ? <span className="badge-inactive text-[10px]">Inactive</span>
+                        : <span className="badge-active text-[10px]">Active</span>}
+                      {m.config.isIsolated && <span className="badge-isolated text-[10px]">Isolated</span>}
                     </div>
                   </button>
                 );
@@ -142,7 +189,7 @@ export default function PositionPage() {
         <div className="flex items-center justify-between mb-3">
           <span className="stat-label">Global Health Factor</span>
           <span className={`text-2xl font-bold font-mono ${hfColor(hf)}`}>
-            {formatHf(healthFactor)}
+            {hfLabel}
           </span>
         </div>
         <div className="h-2 bg-ceitnot-border rounded-full overflow-hidden">
@@ -160,9 +207,16 @@ export default function PositionPage() {
       </div>
 
       {/* Selected market with no position — show open position prompt */}
-      {selectedMarketId !== null && !positions.some(p => p.marketId === selectedMarketId) && (() => {
+      {selectedMarketId !== null && !nonEmptyPositions.some(p => p.marketId === selectedMarketId) && (() => {
         const m = selectableMarkets.find(mk => mk.id === selectedMarketId);
         if (!m) return null;
+        const marketInactive =
+          !m.config.isActive || isFrontendInactiveMarket(m.id);
+        const blockedReason =
+          isolationBlockReasonFor('deposit', m.id)
+          ?? (marketInactive ? `Рынок ${marketLabel(m.id)} сейчас неактивен на фронте.` : undefined);
+        const mintBlockedReason = frontendInactiveReason(m.id) ?? blockedReason;
+        const disableDeposit = marketInactive || !!blockedReason;
         return (
           <div className="card p-8 text-center mb-4">
             <div className="w-12 h-12 rounded-xl bg-ceitnot-gold/15 flex items-center justify-center text-ceitnot-gold text-lg font-bold mx-auto mb-3">
@@ -171,41 +225,67 @@ export default function PositionPage() {
             <h3 className="font-semibold text-lg">{m.vaultSymbol ?? `Market #${m.id}`}</h3>
             <p className="text-ceitnot-muted text-sm mt-1">No position in this market yet. Deposit collateral to open one.</p>
             <div className="flex justify-center gap-3 mt-5">
-              <button onClick={() => openMint(m.id, m.config.vault)} className="btn-secondary text-sm flex items-center gap-2">
+              <button
+                onClick={() => openMint(m.id, m.config.vault)}
+                className="btn-secondary text-sm flex items-center gap-2"
+                disabled={!!mintBlockedReason}
+                title={mintBlockedReason}
+              >
                 <Coins size={14} /> Get Shares
               </button>
-              <button onClick={() => openModal('deposit', m.id)} className="btn-primary text-sm flex items-center gap-2">
+              <button
+                onClick={() => openModal('deposit', m.id)}
+                className={`${disableDeposit ? 'btn-secondary' : 'btn-primary'} text-sm flex items-center gap-2`}
+                disabled={disableDeposit}
+                title={blockedReason}
+              >
                 <PlusCircle size={14} /> Deposit
               </button>
             </div>
+            {blockedReason && (
+              <p className="text-xs text-ceitnot-warning mt-3 max-w-2xl mx-auto">{blockedReason}</p>
+            )}
           </div>
         );
       })()}
 
       {/* No positions at all */}
-      {positions.length === 0 && selectedMarketId === null && (
+      {nonEmptyPositions.length === 0 && selectedMarketId === null && (
         <div className="card p-10 text-center">
           <p className="text-ceitnot-muted">No active positions found.</p>
           <p className="text-xs text-ceitnot-muted mt-1">Select a market above or deposit collateral to open a position.</p>
           <div className="flex justify-center gap-3 mt-5 flex-wrap">
-            {browseMarkets.slice(0, 3).map(m => (
+            {browseMarkets.slice(0, 3).map(m => {
+              const marketInactive =
+                !m.config.isActive || isFrontendInactiveMarket(m.id);
+              const blockedReason =
+                isolationBlockReasonFor('deposit', m.id)
+                ?? (marketInactive ? `Рынок ${marketLabel(m.id)} сейчас неактивен на фронте.` : undefined);
+              const mintBlockedReason = frontendInactiveReason(m.id) ?? blockedReason;
+              const disableDeposit = marketInactive || !!blockedReason;
+              return (
               <div key={m.id} className="flex gap-2">
                 <button
                   onClick={() => openMint(m.id, m.config.vault)}
                   className="btn-secondary text-sm flex items-center gap-2"
+                  disabled={!!mintBlockedReason}
+                  title={mintBlockedReason}
                 >
                   <Coins size={14} />
                   Get Shares #{m.id}
                 </button>
                 <button
                   onClick={() => openModal('deposit', m.id)}
-                  className="btn-primary text-sm flex items-center gap-2"
+                  className={`${disableDeposit ? 'btn-secondary' : 'btn-primary'} text-sm flex items-center gap-2`}
+                  disabled={disableDeposit}
+                  title={blockedReason}
                 >
                   <PlusCircle size={14} />
                   Deposit #{m.id}
                 </button>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -213,13 +293,32 @@ export default function PositionPage() {
       {/* Position cards */}
       {(() => {
         const filtered = selectedMarketId === null
-          ? positions
-          : positions.filter(p => p.marketId === selectedMarketId);
+          ? nonEmptyPositions
+          : nonEmptyPositions.filter(p => p.marketId === selectedMarketId);
         if (filtered.length === 0) return null;
         return (
         <div className="space-y-4">
           {filtered.map(pos => {
             const market = markets.find(m => m.id === pos.marketId);
+            const isolatedMarket = !!market?.config.isIsolated;
+            const marketInactive =
+              !market?.config.isActive
+              || isFrontendInactiveMarket(pos.marketId);
+            const enterBlockedReason = isolationBlockReasonFor('deposit', pos.marketId);
+            const inactiveMarketActionReason = isolatedMarket
+              ? `Рынок ${marketLabel(pos.marketId)} неактивен на фронте: все действия отключены.`
+              : undefined;
+            const sharedActionBlockedReason =
+              inactiveMarketActionReason
+              ?? enterBlockedReason
+              ?? (marketInactive ? `Рынок ${marketLabel(pos.marketId)} сейчас неактивен на фронте.` : undefined);
+            const mintBlockedReason = frontendInactiveReason(pos.marketId) ?? sharedActionBlockedReason;
+            const disableGetShares = !!mintBlockedReason;
+            const disableDeposit = marketInactive || !!sharedActionBlockedReason;
+            const disableWithdraw = !!inactiveMarketActionReason;
+            const disableRepay = !hasMeaningfulDebt(pos.debt) || !!inactiveMarketActionReason;
+            const disableBorrow =
+              !!sharedActionBlockedReason || !!market?.config.isFrozen || marketInactive;
             const ltvBps = market?.config.ltvBps;
             const ltv = ltvBps ? Number(ltvBps) / 100 : null;
 
@@ -242,11 +341,14 @@ export default function PositionPage() {
                     <span className="text-xs text-ceitnot-muted">Market #{pos.marketId}</span>
                   </div>
                   <div>
-                    {market?.config.isFrozen
-                      ? <span className="badge-frozen">Frozen</span>
-                      : market?.config.isActive
-                      ? <span className="badge-active">Active</span>
-                      : <span className="badge-inactive">Inactive</span>}
+                    <div className="flex items-center gap-2">
+                      {market?.config.isFrozen
+                        ? <span className="badge-frozen">Frozen</span>
+                        : marketInactive
+                        ? <span className="badge-inactive">Inactive</span>
+                        : <span className="badge-active">Active</span>}
+                      {market?.config.isIsolated && <span className="badge-isolated">Isolated</span>}
+                    </div>
                   </div>
                 </div>
 
@@ -273,52 +375,65 @@ export default function PositionPage() {
                   <div>
                     <p className="stat-label">Collateral Shares</p>
                     <p className="font-mono text-ceitnot-ink mt-1">
-                      {formatToken(pos.shares, market?.vaultDecimals ?? 18, 4)}
+                      {formatWithDust(pos.shares, market?.vaultDecimals ?? 18, 4)}
                     </p>
                   </div>
                   <div>
                     <p className="stat-label">Collateral Value</p>
-                    <p className="font-mono text-ceitnot-ink mt-1">{formatWad(pos.value, 4)}</p>
+                    <p className="font-mono text-ceitnot-ink mt-1">{formatWithDust(pos.value, 18, 4)}</p>
                   </div>
                   <div>
                     <p className="stat-label">Outstanding Debt</p>
-                    <p className={`font-mono mt-1 ${pos.debt > 0n ? 'text-ceitnot-warning' : 'text-ceitnot-success'}`}>
-                      {formatWad(pos.debt, 4)}
+                    <p className={`font-mono mt-1 ${hasMeaningfulDebt(pos.debt) ? 'text-ceitnot-warning' : 'text-ceitnot-success'}`}>
+                      {formatDebtDisplay(pos.debt)}
                     </p>
                   </div>
                 </div>
 
+                {enterBlockedReason && (
+                  <div className="px-5 py-3 border-b border-ceitnot-border bg-ceitnot-warning/10">
+                    <p className="text-xs text-ceitnot-warning whitespace-pre-wrap">{enterBlockedReason}</p>
+                  </div>
+                )}
                 {/* Action buttons */}
                 <div className="px-5 py-3 flex flex-wrap gap-2">
                   <button
                     onClick={() => market?.config.vault && openMint(pos.marketId, market.config.vault)}
                     className="btn-ghost text-xs flex items-center gap-1.5 py-2 border border-ceitnot-border"
+                    disabled={disableGetShares}
+                    title={mintBlockedReason}
                   >
                     <Coins size={13} /> Get Shares
                   </button>
                   <button
                     onClick={() => openModal('deposit', pos.marketId)}
-                    className="btn-primary text-xs flex items-center gap-1.5 py-2"
+                    className={`${disableDeposit ? 'btn-secondary' : 'btn-primary'} text-xs flex items-center gap-1.5 py-2`}
+                    disabled={disableDeposit}
+                    title={sharedActionBlockedReason}
                   >
                     <PlusCircle size={13} /> Deposit
                   </button>
                   <button
                     onClick={() => openModal('withdraw', pos.marketId)}
                     className="btn-secondary text-xs flex items-center gap-1.5 py-2"
+                    disabled={disableWithdraw}
+                    title={inactiveMarketActionReason}
                   >
                     <MinusCircle size={13} /> Withdraw
                   </button>
                   <button
                     onClick={() => openModal('borrow', pos.marketId)}
-                    className="btn-primary text-xs flex items-center gap-1.5 py-2"
-                    disabled={market?.config.isFrozen || !market?.config.isActive}
+                    className={`${disableBorrow ? 'btn-secondary' : 'btn-primary'} text-xs flex items-center gap-1.5 py-2`}
+                    disabled={disableBorrow}
+                    title={sharedActionBlockedReason}
                   >
                     <ArrowUpCircle size={13} /> Borrow
                   </button>
                   <button
                     onClick={() => openModal('repay', pos.marketId)}
                     className="btn-secondary text-xs flex items-center gap-1.5 py-2"
-                    disabled={pos.debt === 0n}
+                    disabled={disableRepay}
+                    title={inactiveMarketActionReason}
                   >
                     <ArrowDownCircle size={13} /> Repay
                   </button>
@@ -338,8 +453,9 @@ export default function PositionPage() {
           marketId={modal.marketId}
           vaultAddress={markets.find(m => m.id === modal.marketId)?.config.vault}
           debtTokenAddress={debtToken}
-          sharesBalance={positions.find(p => p.marketId === modal.marketId)?.shares}
-          debtBalance={positions.find(p => p.marketId === modal.marketId)?.debt}
+          sharesBalance={nonEmptyPositions.find(p => p.marketId === modal.marketId)?.shares}
+          debtBalance={nonEmptyPositions.find(p => p.marketId === modal.marketId)?.debt}
+          isolationBlockedReason={isolationBlockReasonFor(modal.action, modal.marketId)}
           onClose={closeModal}
           onSuccess={() => { closeModal(); refetch(); }}
         />

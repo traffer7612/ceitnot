@@ -1,11 +1,16 @@
 import { Link } from 'react-router-dom';
 import { useMarkets } from '../hooks/useMarkets';
 import { useContractAddresses } from '../lib/contracts';
-import { formatWad, formatBps, formatRate, formatAddress } from '../lib/utils';
+import { formatWad, formatBps, formatRate, formatAddress, formatToken, formatRateApr } from '../lib/utils';
 import { TrendingUp, RefreshCw } from 'lucide-react';
+const IRM_PER_SECOND_MAX = 10n ** 24n;
 
 function MarketCard({ market }: { market: ReturnType<typeof useMarkets>['markets'][number] }) {
-  const { id, config, totalDebt, totalCollateral, vaultSymbol } = market;
+  const { id, config, totalDebt, totalCollateral, vaultSymbol, vaultDecimals } = market;
+  const marketInactive = !config.isActive || config.isIsolated;
+  const irmUsesPerSecondRates = [config.baseRate, config.slope1, config.slope2]
+    .some(v => v > 0n && v < IRM_PER_SECOND_MAX);
+  const formatIrmRate = (v: bigint) => irmUsesPerSecondRates ? formatRateApr(v) : formatRate(v);
 
   /** Share of market borrow cap used. When cap is 0 = unlimited, there is no percentage — do not show 0% (misleading). */
   const capUnlimited = config.borrowCap === 0n;
@@ -31,9 +36,9 @@ function MarketCard({ market }: { market: ReturnType<typeof useMarkets>['markets
         <div>
           {config.isFrozen
             ? <span className="badge-frozen">Frozen</span>
-            : config.isActive
-            ? <span className="badge-active">Active</span>
-            : <span className="badge-inactive">Inactive</span>}
+            : marketInactive
+            ? <span className="badge-inactive">Inactive</span>
+            : <span className="badge-active">Active</span>}
           {config.isIsolated && <span className="badge-isolated ml-1">Isolated</span>}
         </div>
       </div>
@@ -65,15 +70,15 @@ function MarketCard({ market }: { market: ReturnType<typeof useMarkets>['markets
         <Row label="LTV"                  value={formatBps(config.ltvBps)} />
         <Row label="Liq. Threshold"       value={formatBps(config.liquidationThresholdBps)} />
         <Row label="Liq. Penalty"         value={formatBps(config.liquidationPenaltyBps)} />
-        <Row label="Base Rate"            value={formatRate(config.baseRate)} />
-        <Row label="Slope 1"              value={formatRate(config.slope1)} />
+        <Row label="Base Rate"            value={formatIrmRate(config.baseRate)} />
+        <Row label="Slope 1"              value={formatIrmRate(config.slope1)} />
         <Row label="Kink"                 value={formatRate(config.kink)} />
         <Row label="Reserve Factor"       value={formatBps(config.reserveFactorBps)} />
         <Row label="Origination Fee"      value={formatBps(config.originationFeeBps)} />
-        <Row label="Total Collateral"     value={formatWad(totalCollateral, 2)} />
+        <Row label="Total Collateral"     value={formatToken(totalCollateral, vaultDecimals ?? 18, 2)} />
         <Row label="Total Debt"           value={formatWad(totalDebt, 2)} />
         <Row label="Borrow Cap"           value={config.borrowCap === 0n ? 'Unlimited' : formatWad(config.borrowCap, 2)} />
-        <Row label="Supply Cap"           value={config.supplyCap === 0n ? 'Unlimited' : formatWad(config.supplyCap, 2)} />
+        <Row label="Supply Cap"           value={config.supplyCap === 0n ? 'Unlimited' : formatToken(config.supplyCap, vaultDecimals ?? 18, 2)} />
         {config.dutchAuctionEnabled && (
           <Row label="Auction Duration" value={`${config.auctionDuration}s`} />
         )}

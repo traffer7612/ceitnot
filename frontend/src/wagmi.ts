@@ -1,9 +1,10 @@
-import { getDefaultConfig } from '@rainbow-me/rainbowkit';
+import { getDefaultConfig, type WalletList } from '@rainbow-me/rainbowkit';
+import { injectedWallet } from '@rainbow-me/rainbowkit/wallets';
 import { http, fallback } from 'wagmi';
 import { defineChain } from 'viem';
 import { arbitrum, hardhat, sepolia } from 'viem/chains';
 import type { Chain } from 'viem/chains';
-import { TARGET_CHAIN_ID } from './lib/chainEnv';
+import { APP_SUPPORTED_CHAIN_IDS, TARGET_CHAIN_ID } from './lib/chainEnv';
 
 /** Arbitrum Sepolia (not always exported in older viem/chains). */
 export const arbitrumSepolia = defineChain({
@@ -36,8 +37,36 @@ function chainFor(id: number): Chain {
 
 /** Active chain from `VITE_CHAIN_ID` (RainbowKit / wagmi). */
 export const targetChain = chainFor(TARGET_CHAIN_ID);
+export const supportedChains = APP_SUPPORTED_CHAIN_IDS.map(chainFor) as [Chain, ...Chain[]];
+export const SUPPORTED_CHAIN_IDS = supportedChains.map((c) => c.id) as readonly number[];
+const FALLBACK_WALLETCONNECT_PROJECT_ID = '00000000000000000000000000000000';
 
-export const SUPPORTED_CHAIN_IDS = [targetChain.id] as const;
+function normalizeEnvString(raw: string | undefined): string {
+  const t = typeof raw === 'string' ? raw.trim() : '';
+  return t.replace(/^['"]+|['"]+$/g, '').trim();
+}
+function envFlagEnabled(raw: string | undefined): boolean {
+  const v = normalizeEnvString(raw).toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+function walletConnectProjectIdFromEnv(raw: string | undefined): string | undefined {
+  const v = normalizeEnvString(raw);
+  if (!/^[a-f0-9]{32}$/i.test(v)) return undefined;
+  return v;
+}
+
+const walletConnectProjectId = walletConnectProjectIdFromEnv(
+  import.meta.env.VITE_WALLETCONNECT_PROJECT_ID as string | undefined,
+);
+const walletConnectEnabled =
+  envFlagEnabled(import.meta.env.VITE_ENABLE_WALLETCONNECT as string | undefined) &&
+  Boolean(walletConnectProjectId);
+const injectedOnlyWallets: WalletList = [
+  {
+    groupName: 'Browser wallet',
+    wallets: [injectedWallet],
+  },
+];
 
 const PUBLIC_ARBITRUM_RPCS = [
   'https://arb1.arbitrum.io/rpc',
@@ -154,10 +183,11 @@ function transportFor(chainId: number) {
 
 export const config = getDefaultConfig({
   appName: 'Ceitnot Protocol',
-  projectId: import.meta.env.VITE_WALLETCONNECT_PROJECT_ID ?? 'ceitnot-dev-placeholder',
-  chains: [targetChain],
-  transports: {
-    [targetChain.id]: transportFor(targetChain.id),
-  },
+  projectId: walletConnectProjectId ?? FALLBACK_WALLETCONNECT_PROJECT_ID,
+  wallets: walletConnectEnabled ? undefined : injectedOnlyWallets,
+  chains: supportedChains,
+  transports: Object.fromEntries(
+    supportedChains.map((chain) => [chain.id, transportFor(chain.id)]),
+  ),
   ssr: false,
 });

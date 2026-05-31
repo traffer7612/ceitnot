@@ -5,10 +5,10 @@ import { formatUnits, parseUnits, type Hash } from 'viem';
 import { Gift, Lock, Clock, Plus, Loader2, CheckCircle, AlertCircle } from 'lucide-react';
 import { erc20Abi, veLockAbi } from '../abi/ceitnotEngine';
 import { gasFor, TARGET_CHAIN_ID } from '../lib/contracts';
-import { viteAddress } from '../lib/chainEnv';
+import { contractAddress } from '../lib/chainEnv';
 import { formatWad } from '../lib/utils';
-const VE_TOKEN = viteAddress(import.meta.env.VITE_VE_TOKEN_ADDRESS as string | undefined);
-const GOV_TOKEN = viteAddress(import.meta.env.VITE_GOVERNANCE_TOKEN_ADDRESS as string | undefined);
+const VE_TOKEN = contractAddress('VE_TOKEN');
+const GOV_TOKEN = contractAddress('GOVERNANCE_TOKEN');
 const WEEK = 7 * 24 * 3600;
 
 type Step = 'idle' | 'approving' | 'writing' | 'success' | 'error';

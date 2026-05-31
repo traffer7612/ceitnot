@@ -66,7 +66,7 @@ forge test
 
 ## Frontend & Backend
 
-**Backend** (API: config, stats, health):
+**Backend** (API: config, stats, health + optional Galxe leaderboard wallets):
 
 ```bash
 cd backend
@@ -84,6 +84,7 @@ npm run dev           # http://localhost:5173, proxies /api to backend
 ```
 
 Connect a wallet (Arbitrum or Base); the dashboard shows your position and lets you deposit collateral, borrow, and repay. Set `CEITNOT_ENGINE_ADDRESS` in the backend so the app can read stats and contract addresses.
+To include Galxe wallets/leaderboard stats in `/api/stats/:chainId` (shown on landing), configure `GALXE_SPACE_ID` and optional `GALXE_*` vars in `backend/.env`.
 
 ## Security
 

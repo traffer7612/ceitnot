@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
+  const backendProxyTarget =
+    env.VITE_BACKEND_PROXY_TARGET?.trim() || "http://localhost:3001";
   const chainId = Number(env.VITE_CHAIN_ID || "31337");
   const arbitrumRpc =
     env.VITE_ARBITRUM_RPC_URL?.trim() || "https://arbitrum-one.publicnode.com";
@@ -23,7 +25,7 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     server: {
       proxy: {
-        "/api": { target: "http://localhost:3002", changeOrigin: true },
+        "/api": { target: backendProxyTarget, changeOrigin: true },
         "/rpc": {
           target: rpcTarget,
           changeOrigin: true,

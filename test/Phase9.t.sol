@@ -378,6 +378,25 @@ contract Phase9Test is Test {
         assertEq(psm.mintedViaPsm(), out);
     }
 
+    function test_psm_perTx_swapLimits() public {
+        psm.setSwapLimits(100 * WAD, 50 * WAD);
+        _psmSetup(200 * WAD);
+
+        vm.prank(alice);
+        vm.expectRevert(CeitnotPSM.PSM__ExceedsSwapLimit.selector);
+        psm.swapIn(101 * WAD);
+
+        vm.prank(alice);
+        psm.swapIn(100 * WAD);
+
+        vm.startPrank(alice);
+        ausd.approve(address(psm), type(uint256).max);
+        vm.expectRevert(CeitnotPSM.PSM__ExceedsSwapLimit.selector);
+        psm.swapOut(51 * WAD);
+        psm.swapOut(50 * WAD);
+        vm.stopPrank();
+    }
+
     function test_psm_insufficientReserves_swapOut() public {
         // Mint aUSD to alice without going through PSM (so PSM holds no USDC)
         ausd.mint(alice, 100 * WAD);

@@ -8,17 +8,14 @@ import {
 } from 'lucide-react';
 import { erc20Abi, veLockAbi, governorAbi, marketRegistryAbi } from '../abi/ceitnotEngine';
 import { gasFor, TARGET_CHAIN_ID, useContractAddresses } from '../lib/contracts';
-import { viteAddress, viteAddressLegacy } from '../lib/chainEnv';
+import { contractAddress } from '../lib/chainEnv';
 import { formatWad, formatAddress } from '../lib/utils';
 import { blockExplorerAddressUrl } from '../lib/explorer';
-const VE_TOKEN = viteAddress(import.meta.env.VITE_VE_TOKEN_ADDRESS as string | undefined);
-const GOV_TOKEN = viteAddress(import.meta.env.VITE_GOVERNANCE_TOKEN_ADDRESS as string | undefined);
-const GOVERNOR = viteAddress(import.meta.env.VITE_GOVERNOR_ADDRESS);
-const TIMELOCK = viteAddress(import.meta.env.VITE_TIMELOCK_ADDRESS);
-const CEITUSD  = viteAddressLegacy(
-  import.meta.env.VITE_CEITUSD_ADDRESS as string | undefined,
-  import.meta.env.VITE_AUSD_ADDRESS as string | undefined,
-);
+const VE_TOKEN = contractAddress('VE_TOKEN');
+const GOV_TOKEN = contractAddress('GOVERNANCE_TOKEN');
+const GOVERNOR = contractAddress('GOVERNOR');
+const TIMELOCK = contractAddress('TIMELOCK');
+const CEITUSD = contractAddress('CEITUSD') ?? contractAddress('AUSD');
 const TALLY_URL = import.meta.env.VITE_TALLY_URL as string | undefined;
 /** Minimal ABI for governance calldata to CeitnotUSD (ceitUSD) */
 const ceitusdGovAbi = [
@@ -398,8 +395,8 @@ export default function GovernancePage() {
         args: [trimmedPsm as Address],
       })
       : '0x';
-  const psmAddress = viteAddress(import.meta.env.VITE_PSM_ADDRESS as string | undefined);
-  const treasuryAddress = viteAddress(import.meta.env.VITE_TREASURY_ADDRESS as string | undefined);
+  const psmAddress = contractAddress('PSM');
+  const treasuryAddress = contractAddress('TREASURY');
   const acceptAdminTargets: Address[] =
     GOVERNOR && engine && registry && psmAddress && CEITUSD && treasuryAddress
       ? [engine, registry, psmAddress, CEITUSD, treasuryAddress]
@@ -512,11 +509,8 @@ export default function GovernancePage() {
   const arbGovernanceExecutionGas =
     chainId === 42161 || chainId === 421614
       ? {
-          // MetaMask on Arb Sepolia may produce broken estimateGas for Governor queue/execute.
-          // Provide sane explicit caps to avoid absurd fee previews and allow signing.
+          // Keep only a conservative gas limit; let wallet choose fee fields on Arbitrum.
           gas: 1_500_000n,
-          maxFeePerGas: 200_000_000n, // 0.2 gwei
-          maxPriorityFeePerGas: 10_000_000n, // 0.01 gwei
         }
       : {};
   const parseAmt = (v: string) => { try { return v ? parseUnits(v, 18) : 0n; } catch { return 0n; } };
@@ -838,7 +832,7 @@ export default function GovernancePage() {
         debugLabel,
         onDiagnostic: pushFeedDiagnostic,
       });
-      const adminSources = [engine, registry, CEITUSD, viteAddress(import.meta.env.VITE_PSM_ADDRESS)]
+      const adminSources = [engine, registry, CEITUSD, psmAddress]
         .filter((x): x is Address => !!x);
       const createdLogs = await getLogsWithSafeRange({
         address: GOVERNOR,

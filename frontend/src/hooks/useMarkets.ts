@@ -105,7 +105,10 @@ export function useMarkets() {
       vaultSymbol,
       vaultAsset,
       hasNonCanonicalWstEthAsset,
-      vaultDecimals:   erc20Decimals(vaultDecimalsResults?.[i]?.result as number | bigint | undefined),
+      vaultDecimals:
+        vaultDecimalsResults?.[i]?.status === 'success'
+          ? erc20Decimals(vaultDecimalsResults?.[i]?.result as number | bigint | undefined)
+          : undefined,
     };
   });
   const markets: Market[] = rawMarkets.filter((m): m is NonNullable<typeof m> => m !== null);
